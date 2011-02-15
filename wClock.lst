@@ -1,0 +1,2564 @@
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  1
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00001 ;*****************************************************************************
+                      00002 ; wClock - main file
+                      00003 ;*****************************************************************************
+                      00004 ;
+                      00005 ;    Filename:          wClock.asm
+                      00006 ;    Function:          Word Clock firmware
+                      00007 ;    Author, Company:   Alden Hart, Luke's Lights
+                      00008 ;    Revision:          091211
+                      00009 ;
+                      00010 ;    Chip Support:      Supports PIC18F4520
+                      00011 ;    Board Support:     
+                      00012 ;
+                      00013 ;    Version Notes:
+                      00014 ;       091013 - Started conversion from eFruit board
+                      00015 ;
+                      00016 ;    Key to Status: [xcstv]
+                      00017 ;       x = experimental - might not even assemble correctly
+                      00018 ;       c = candidate, coded but not necessarily simulated, tested, or validated
+                      00019 ;       s = simulated and presumably somewhat tested
+                      00020 ;       t = tested on real hardware
+                      00021 ;       v = validated - considered to be stable
+                      00022 ;
+                      00023 ;    TODO BEFORE INSTALLATION:
+                      00024 ;       - Scan for all occurrences of ++++ and follow instructions
+                      00025 ;
+                      00026 
+                      00027 ;*****************************************************************************
+                      00028 ;******************************* DIRECTIVES **********************************
+                      00029 ;*****************************************************************************
+                      00030 
+                      00031 #include <global.inc>                   ; 1: global defines - must be first
+                      00001 ;*****************************************************************************
+                      00002 ; global.inc - global header file for any application or chip family
+                      00003 ;*****************************************************************************
+                      00004 ;
+                      00005 ;    Filename:          global.inc
+                      00006 ;    Function:          define files, global equates and macros
+                      00007 ;    Author, Company:   Alden Hart, Luke's Lights
+                      00008 ;    Date/Time/Rev:     091015
+                      00009 ;
+                      00010 ; This file must be the first include file in each .asm file
+                      00011 ; Set this file up first
+                      00012 
+                      00013 ;----- Include file definitions ------
+                      00014 ;
+                      00015 ; All ASM files must have this set of includes in this order:
+                      00016 ;#include <global.inc>                  ; 1: global defines - must be first
+                      00017 ;#include <DEV_INCLUDE_FILE>            ; 2: Our device include file
+                      00018 ;#include <LED_INCLUDE_FILE>            ; 3: LED subsystem include file
+                      00019 ;#include <APP_INCLUDE_FILE>            ; 4: Application include file
+                      00020 ;
+                      00021 ; Which are set up here:
+                      00022 #define DEV_INCLUDE_FILE d18f4520.inc   ; device header file
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  2
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00023 #define LED_INCLUDE_FILE led.inc        ; led sub-system header file
+                      00024 #define APP_INCLUDE_FILE wClock.inc     ; application header file
+                      00025 
+                      00026 ;----- Fundamental definitions ------
+                      00027 
+  00000001            00028 TRUE            equ     1       ; must equal 1 - do not re-assign
+  00000000            00029 FALSE           equ     0       ; must equal 0 - do not re-assign
+  00000001            00030 ON              equ     1
+  00000000            00031 OFF             equ     0
+                      00032 
+                      00033 ;---- Global error return codes ----
+                      00034 
+  00000000            00035 ERR_NO_ERROR            equ     .00     ; not actually an error, probably an end
+  00000001            00036 ERR_BAD_COMMAND         equ     .01     ; invalid command value
+  00000002            00037 ERR_BAD_CHANNEL         equ     .02     ; invalid channel number or encoded channel
+  00000003            00038 ERR_BAD_ARGNUM          equ     .03     ; invalid argument number
+  00000004            00039 ERR_BAD_OPCODE          equ     .04     ; invalid argument opcode
+  00000005            00040 ERR_CMD_LOADER_FAILED   equ     .05     ; command loader failed in cmd module
+  00000006            00041 ERR_GET_COMMAND_FAILED  equ     .06     ; get_command failed in presets module
+  00000007            00042 ERR_GET_NEXT_CMD_FAILED equ     .07     ; get_next failed in presets module
+                      00043 
+                      00044 ;---- Handy global macros ----
+                      00045 
+                      00046 ;---- Handy macro to set a 16 bit pointer to a literal address
+                      00047 
+                      00048 setptr  macro   ADDRESS, ptr_hi, ptr_lo
+                      00049         movlw   HIGH ADDRESS
+                      00050         movwf   ptr_hi
+                      00051         movlw   LOW ADDRESS
+                      00052         movwf   ptr_lo
+                      00053         endm
+                      00054 
+                      00055 ;---- Handy macro to set table pointer to an address
+                      00056 
+                      00057 tbladdr macro   ADDRESS
+                      00058         movlw   HIGH ADDRESS
+                      00059         movwf   TBLPTRH
+                      00060         movlw   LOW ADDRESS
+                      00061         movwf   TBLPTRL
+                      00062         endm
+                      00063 
+                      00064 ;---- Handy macro to set table pointer to an address indexed by a second value
+                      00065 
+                      00066 tblindx macro   ADDRESS, index  ; index is a mem variable name, not a literal
+                      00067         movlw   high ADDRESS
+                      00068         movwf   TBLPTRH
+                      00069         movlw   low ADDRESS
+                      00070         movwf   TBLPTRL
+                      00071         rlncf   index,W                 ; multiply index value by 2
+                      00072         addwf   TBLPTRL
+                      00073         movlw   0                       ; propagate carry (if any)
+                      00074         addwfc  TBLPTRH
+                      00075         endm
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  3
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00076 
+                      00077 ;---- Handy macro to read a 16 bitvalue from a table into a pointer
+                      00078 ;     Usually follows tbladdr or tblindx
+                      00079 ;     Leaves table pointer to next location
+                      00080 
+                      00081 tblread macro   ptr_hi, ptr_lo          ; hi and lo registers for table read
+                      00082         tblrd*+
+                      00083         movff   TABLAT,ptr_lo           ; DATA statements are lo/hi endian
+                      00084         tblrd*+
+                      00085         movff   TABLAT,ptr_hi
+                      00086         endm
+                      00087 
+                      00088 ;---- SWITCH statement macro (jump through a vector table) ----
+                      00089 ; OK, it's not REALLY a switch/case statement - ot works differently than C
+                      00090 ;
+                      00091 ; Calling convention is:
+                      00092 ;
+                      00093 ;       rlncf   cmd_command,W           ; load table index x2 into W
+                      00094 ;       switch                          ; call the macro
+                      00095 ;       data    CL_ERROR                ; table index 0
+                      00096 ;       data    CL_LOAD_SET_HSB         ; table index 1 (etc).
+                      00097 ;       data    CL_LOAD_SET_RGB
+                      00098 ;       data    CL_LOAD_PATCH
+                      00099 ;       data    CL_LOAD_FADE
+                      00100 ;       data    CL_LOAD_WATCH           ; max index. not range checked.
+                      00101 ;
+                      00102 ; You must also include the following lines in any file but the main:
+                      00103 ;
+                      00104 ;       extern  tblptrh_temp
+                      00105 ;       extern  tblptrl_temp
+                      00106 ;
+                      00107 ; CONSTRAINTS:
+                      00108 ;       W must contain the table index multipled by 2 prior to invoking switch
+                      00109 ;       The macro must be followed by the actual jump table as illustrated above.
+                      00110 ;       The first element in the jump table must be index zero (0)
+                      00111 ;       Tables are limited to 128 entries or you must change case for 16-bit math
+                      00112 ;       The macro does not check that the index is in range for the table...
+                      00113 ;       ...presumably this is validated by an upstream data validation checker.
+                      00114 ;
+                      00115 ; This macro is not nearly as code efficient as a computed BRA (below), but  
+                      00116 ; doesn't break if it crosses on page boundaries:
+                      00117 ;
+                      00118 ;       movlw   HIGH jump
+                      00119 ;       movwf   PCLATH
+                      00120 ;       rlncf   index,W                 ; get command code x2 into W...
+                      00121 ;       addlw   LOW jump                ;...this only works with BRAs 
+                      00122 ;       movwf   PCL                     ;...GOTOs require x4
+                      00123 ;jump   bra     CL_ERROR
+                      00124 ;       bra     CL_LOAD_SET_HSB
+                      00125 ;       bra     CL_LOAD_SET_RGB
+                      00126 ;       bra     CL_LOAD_PATCH
+                      00127 ;       bra     CL_LOAD_FADE
+                      00128 ;       bra     CL_LOAD_WATCH
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  4
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00129 
+                      00130 switch  macro
+                      00131         local   table_base
+                      00132         movff   TBLPTRH,temp_tblptrh    ; save current table pointer
+                      00133         movff   TBLPTRL,temp_tblptrl
+                      00134 
+                      00135         addlw   LOW table_base          ; add index (W) to table base
+                      00136         movwf   TBLPTRL                 ; set low pointer
+                      00137         movlw   HIGH table_base
+                      00138         movwf   TBLPTRH
+                      00139         btfsc   STATUS,C                ; propagate the carry from the add
+                      00140         incf    TBLPTRH,F
+                      00141 
+                      00142         tblrd*+                         ; read and save vector address lo byte
+                      00143         movf    TABLAT,W
+                      00144         tblrd*                          ; read and save vector address hi byte
+                      00145         movff   TABLAT,PCLATH
+                      00146 
+                      00147         movff   temp_tblptrh,TBLPTRH    ; restore calling table pointer
+                      00148         movff   temp_tblptrl,TBLPTRL
+                      00149 
+                      00150         movwf   PCL                     ; jump to case routine
+                      00151 table_base
+                      00152         endm
+                      00153 
+                      00032 #include <DEV_INCLUDE_FILE>             ; 2: Our device include file
+                      00001 ;*****************************************************************************
+                      00002 ; d18f2520 - device header file
+                      00003 ;*****************************************************************************
+                      00004 ;
+                      00005 ;    Filename:          d18f4520.inc
+                      00006 ;    Author, Company:   Alden Hart, Luke's Lights
+                      00007 ;    Date/Time/Rev:     091015
+                      00008 ;
+                      00009 ; Choses device and sets basic parameters related to the device and it's 
+                      00010 ; use in this application
+                      00011 ; 
+                      00012 
+                      00013 ;----- Common, device-specific definitions -----
+                      00014 
+  00000018            00015 DEV_FAMILY      equ     18              ; for F18 series
+  00000024            00016 FOSC            equ     .36             ; MHz (approximate and must be tested)
+                      00017 
+                      00018 ; Used to qualify instructions:
+  00000000            00019 A       equ     0                       ; Access Bank
+  00000001            00020 B       equ     1                       ; BSR banked
+                      00021 
+                      00022 ;------ Select Device -----
+                      00023 ; pick only one:
+                      00024 ;DEVTYPE  equ   2420            ; 18F2420
+                      00025 ;DEVTYPE  equ   2520            ; 18F2520
+  00004420            00026 DEVTYPE  equ    4420            ; 18F4420
+                      00027 ;DEVTYPE  equ   4520            ; 18F4520
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  5
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00028 
+                      00029 ; PIC18F2420
+                      00030     if DEVTYPE == 2420
+                      00031         nolist
+                      00032 #include <p18f2420.inc>
+                      00033         list
+                      00034 ;       list    p=18f2420               ; not needed - processor is set by MPLAB
+                      00035 MAXRAM  equ     0x02FF
+                      00036     endif
+                      00037 
+                      00038 ;PIC18F2520
+                      00039     if DEVTYPE == 2520
+                      00040         nolist
+                      00041 #include <p18f2520.inc>
+                      00042         list
+                      00043 ;       list    p=18f2520               ; not needed - processor is set by MPLAB
+                      00044 MAXRAM  equ     0x05FF
+                      00045     endif
+                      00046 
+                      00047 ;PIC18F4420
+                      00048     if DEVTYPE == 4420
+                      00001         LIST
+                      00002 
+                      00003 ;==========================================================================
+                      00004 ;  MPASM PIC18F4420 processor include
+                      00005 ; 
+                      00006 ;  (c) Copyright 1999-2007 Microchip Technology, All rights reserved
+                      00007 ;==========================================================================
+                      00008 
+                      01293         LIST
+                      00051         list
+                      00052 ;       list    p=18f4420               ; not needed - processor is set by MPLAB
+  000002FF            00053 MAXRAM  equ     0x02FF
+                      00054     endif
+                      00055 
+                      00056 ;PIC18F4520
+                      00057     if DEVTYPE == 4520
+                      00058         nolist
+                      00059 #include <p18f4520.inc>
+                      00060         list
+                      00061 ;       list    p=18f4520               ; not needed - processor is set by MPLAB
+                      00062 MAXRAM  equ     0x05FF
+                      00063     endif
+                      00033 #include <LED_INCLUDE_FILE>             ; 3: LED subsystem include file
+                      00001 ;*****************************************************************************
+                      00002 ; PIC18F family - LED subsystem include file
+                      00003 ;*****************************************************************************
+                      00004 ;*****************************************************************************
+                      00005 ;
+                      00006 ;    Filename:          led.inc
+                      00007 ;    Author, Company:   Alden Hart, Luke's Lights
+                      00008 ;    Chip Support:      Supports PIC18F family
+                      00009 ;    Revision:          091015
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  6
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00010 ;
+                      00011 ;    This file basically serves as documentation for creating cues and playback
+                      00012 ;
+                      00013 ;*****************************************************************************
+                      00014 ; CUES AND PLAYBACK
+                      00015 ; 
+                      00016 ; PLAY_INIT               Init playlist/cue module and load first playlist/cue
+                      00017 ; PLAY_GET_NEXT_PLAYLIST  Return ptr to next playlist in playlist master table
+                      00018 ; PLAY_GET_PREV_PLAYLIST  Return ptr to previous playlist in playlist master table
+                      00019 ; PLAY_START_PLAYIST      Start a playlist from playlist ptr (becomes active playlist)
+                      00020 ; PLAY_RUN_NEXT_CUE       Run next cue in active playlist
+                      00021 ;         
+                      00022 ; CUE_LOAD_CUE            Load an entire cue
+                      00023 ; CUE_GET_NEXT_COMMAND    Iterator used for for loading an entire cue
+                      00024 ; CUE_GET_COMMAND         Load a single command from cue (into FDR_LOADER buffer)
+                      00025 ; CUE_SET_ARGUMENT        Load an argument into arg table
+                      00026 ; CUE_GET_ARGUMENT        Get an argument from arg table
+                      00027 ;
+                      00028 ; CUES
+                      00029 ;
+                      00030 ; A CUE is a set of COMMANDS that run as a unit to load the state of the 
+                      00031 ; lighting system. A cue takes data from program memory and loads the commands
+                      00032 ; in to the FADER tables (there are some exceptions).
+                      00033 ;
+                      00034 ; For example, if you wanted to load 8 different hue waveforms, set 
+                      00035 ; saturations to 8 different static levels, and PATCH all brightnesses to a 
+                      00036 ; master channel, this could be done using a cue. 
+                      00037 ;
+                      00038 ; The challenge is to define (and encode) complex cues in a way that's both 
+                      00039 ; simple to understand and program and is also relatively memory efficicient. 
+                      00040 ; The above example would take about ~200 bytes if performed as a simple set of 
+                      00041 ; commands. Using the cue tools for definition and encoding this same 
+                      00042 ; operation could be encoded in as little as ~20 bytes.
+                      00043 ;
+                      00044 ; To do this, a series of other operations is supported for cues:
+                      00045 ; 
+                      00046 ;       - CUE_CMD               load a regular command from pgm memory to RAM
+                      00047 ;       - CUE_ARG               load an argument structure into an arg cell
+                      00048 ;       - CUE_LOOP              load the next command N times           
+                      00049 ;       - CUE_LOOP_BLOCK        loop until END_ADDR, N times, starting at START_ADDR
+                      00050 ;       - CUE_JUMP              jump to JUMP_ADDR
+                      00051 ;       - CUE_DONE              end of cue or playback
+                      00052 ;       - CUE_CODA              start queue over
+                      00053 ;
+                      00054 ; Details of the above operations are littered throughout the headers in this
+                      00055 ; file. Summaries of the cue operations are provided below;
+                      00056 ;
+                      00057 ; CUE_CMD:      CUE_CMD, cmd, argmask, arg0....argN
+                      00058 ;
+                      00059 ; Action is to load the command into RAM - similarly to if the command was 
+                      00060 ; received in a serial RX buffer. Contains a command code followed by a 
+                      00061 ; bitmask specifying which args in the command are to be read lterally from 
+                      00062 ; the command line and which args are to be loaded from the argument cells. 
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  7
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00063 ; The argmask is one byte long except in the case of the FADE command where 
+                      00064 ; it is 2 bytes. See CUE_LOAD_COMMAND for details.
+                      00065 ; 
+                      00066 ; CUE_ARG:      CUE_ARG, argnum, opcode, var1, [var2], [var3]
+                      00067 ;
+                      00068 ; Action is to initialize one of the argument cells with an opcode and one or
+                      00069 ; more starting values (vars). Consists of a CUE_ARG byte and 3 - 5 data
+                      00070 ; bytes. Arguments can increment, decrement, add, and do other things between
+                      00071 ; command calls that allow common commands to be set up generically.
+                      00072 ; See CUE_LOAD_ARGUMENT for details.
+                      00073 ;
+                      00074 ; CUE_LOOP:             CUE_LOOP, repeat_count
+                      00075 ;
+                      00076 ; Action is to run the next command N times. The next table entry must be a 
+                      00077 ; command.
+                      00078 ;
+                      00079 ; CUE_LOOP_BLOCK:       CUE_LOOP_BLOCK, repeat_count, start_address
+                      00080 ;
+                      00081 ; Action is to loop N times between the start address and CUE_DONE (the 
+                      00082 ; "looping block"). CUE execution continues on the next line after the 
+                      00083 ; CUE_LOOP_BLOCK command once the loop is complete.
+                      00084 ;
+                      00085 ; This command is useful to iterate through a series of channels with 
+                      00086 ; parameters that vary based on the number of times an arg is used. Typically 
+                      00087 ; a set of CUE_ARGS is setup before calling the block. This is useful to 
+                      00088 ; create "subroutines" of commonly used preset operations. This command 
+                      00089 ; DOES NOT nest and cannot be called recursively (sorry!).
+                      00090 ;
+                      00091 ; CUE_JUMP:             CUE_JUMP, jump_address
+                      00092 ;
+                      00093 ; Action is to transfer cue exeution to a new address, from which execution
+                      00094 ; will not return. Any number of jumps may be chained. Useful for "finishing up"
+                      00095 ; with common code.
+                      00096 ;
+                      00097 ; CUE_DONE:             CUE_DONE <no parameters>
+                      00098 ;
+                      00099 ; Signals the end of a cue block (see above descriptions). If found in 
+                      00100 ; the main body of the called cue, it terminates the interpretation of the 
+                      00101 ; cue and returns control to the caller. If found in a LOOP is terminates
+                      00102 ; that iteration of the loop and returns control to the cue line that 
+                      00103 ; called the loop.
+                      00104 ; 
+                      00105 ; 
+                      00106 ; RESOURCE USAGE:
+                      00107 ; - The PLAYBACK sub-system uses FSR1 as its primary pointer, FSR2 as secondary. 
+                      00108 ; - Does not use FSR0 as this is reserved for interrupts.
+                      00109 ; - The ARG table takes 128 bytes of RAM to store 32 arguments.
+                      00110 ; - Routines follow the convnetion of returning Z bit set for OK, or to indicate
+                      00111 ;   the further processing is required.
+                      00112 
+                      00113 ;----- Circuit and Command Processing Definitions ----
+                      00114 ; See Ckt Mapping tab of spreadsheet for further documentation
+                      00115 
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  8
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+  0000000D            00116 FDR_TABLE_LEN           equ     .13     ; bytes allocated per fader table
+  00000015            00117 CHN_NUM_MAX             equ     .21     ; number of color or mono channels (zero based)
+  0000001D            00118 CKT_NUM_MAX             equ     .29     ; maximum encoded circuit number (zero based)
+  00000005            00119 CKT_TABLE_INCREMENT     equ     .5      ; number of ports being serviced
+  00000027            00120 CKT_TABLE_LEN           equ     .39     ; circuit table is 5 ports * 8 bits (zero based)
+                      00121 
+  00000F80            00122 switch01p               equ     PORTA
+  00000000            00123 switch01b               equ     .0
+                      00124 
+  00000001            00125 MONOCHROME_MODE         equ     TRUE    ; set TRUE if running monochrome, FALSE for color
+                      00126 
+                      00127 ; not used in monochrome mode apps
+  00000000            00128 RED_OFFSET              equ     0       ; table offsets
+  00000001            00129 GRN_OFFSET              equ     1
+  00000002            00130 BLU_OFFSET              equ     2
+  00000003            00131 EXT_OFFSET              equ     3       ; offset for extra channel
+  00000000            00132 HUE_OFFSET              equ     0
+  00000001            00133 SAT_OFFSET              equ     1
+  00000002            00134 BRT_OFFSET              equ     2
+                      00135 
+                      00136 ;---- COMMAND SET ----
+                      00137 ; Command set - MSbyte is command code, LSbyte is argument counter
+                      00138 ; Adding a command involves:
+                      00139 ;  - adding it to this list and adjusting any values
+                      00140 ;  - adding it to CMD_LOADER dispatch table (led_fader.asm)
+                      00141 ;  - adding it to CMD_VALIDATE_CMDCODE (led_fader.asm)
+                      00142 ;  - adding it to CUE_GET_COMMAND (led_cue.asm)
+                      00143 
+  00000011            00144 SET_BRT                 equ     0x11    ; set BRT for color or monochrome
+  00000023            00145 SET_HSB                 equ     0x23    ; set HSB values (color only)
+  00000033            00146 SET_RGB                 equ     0x33    ; set RGB values (color only)
+  00000041            00147 PATCH                   equ     0x41    ; PATCH command
+  00000056            00148 FADE                    equ     0x56    ; FADE command args up through OFF
+  00000057            00149 FADE_REPEAT             equ     0x57    ; FADE command args up through REPEAT 
+  00000058            00150 FADE_MIN                equ     0x58    ; FADE command args up through MIN
+  00000059            00151 FADE_MAX                equ     0x59    ; FADE command args up through MAX
+  0000005A            00152 FADE_X                  equ     0x5A    ; FADE command args up through XFADE
+  00000060            00153 WATCH                   equ     0x60    ; WATCH command - takes one arg (0)
+                      00154 
+  000000FF            00155 NOW                     equ     0xFF    ; WATCH command value - load now
+  000000FE            00156 NEVER                   equ     0xFE    ; WATCH command value - never load
+                      00157 
+                      00158 ;---- Cue command line templates (very useful) ----
+                      00159 ; SET_HSB       CUE_CMD  CMD_SET_HSB  mask  chn  hue   sat   brt        
+                      00160 ; PATCH         CUE_CMD  CMD_PATCH  mask   slave_ckt     master_ckt
+                      00161 ; FADE_46       CUE_CMD CMD_FADE  mask  ckt_num     presc  dly   up   on  down off      
+                      00162 
+                      00163 ;---- CUE AND PLAYBACK EQUATES ----
+                      00164 
+  00000000            00165 ARG_NUM_MAX             equ     .0      ; maximum argument number (zero is a valid #)
+                      00166                                         ; each arg takes 4 bytes of RAM
+  00000000            00167 ARG_HI_FLAG             equ     .0      ; bit to set and test for hi args (>7)
+                      00168 
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE  9
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+  00000000            00169 CUE_DONE                equ     .00     ; should be zero
+  00000001            00170 CUE_CMD                 equ     .01     ; prefix for a command
+  00000002            00171 CUE_ARG                 equ     .02     ; prefix for an argument
+  00000003            00172 CUE_LOOP                equ     .03
+  00000004            00173 CUE_LOOP_BLOCK          equ     .04
+  00000005            00174 CUE_JUMP                equ     .05
+  00000005            00175 CUE_MAX                 equ     .05     ; maximum allowable cmd instruction value
+                      00176 
+                      00177 ; MSbyte of these PLAYLIST_xxxx values must be zero:
+  00000000            00178 PLAYLIST_DONE           equ     0x0000  ; requries a 16 bit value
+  00000001            00179 PLAYLIST_CODA           equ     0x0001
+                      00180 
+                      00181 ;---- Argument OPCODE definitions ----
+                      00182 ;
+                      00183 ; Command arguments (args) are 4 byte structures that perform substitutions 
+                      00184 ; for command variables during command loads. Args can perform literal 
+                      00185 ; substitution for variables or a variety of simple math functions. Structure:
+                      00186 ;
+                      00187 ;       - Arg number    args number 0 - N. Implicit based on location in table
+                      00188 ;       - Opcode        operation to perform during argument substitution
+                      00189 ;       - Operand1      (op1) first operand interprested by opcode
+                      00190 ;       - Operand2      (op2) second operand interprested by opcode
+                      00191 ;       - Operand3      (op3) thirg operand interprested by opcode
+                      00192 ;
+                      00193 ; op2(op1) means use the value of op1 found at the argnum provided in op2
+                      00194 ;   an arg error returns the value of zero.
+                      00195 ;
+                      00196 ; opcode            op1    op2    op3   usage
+                      00197 ; OP_LIT            value  ---    ---   ; use op1 as literal value
+                      00198 ; OP_INC            start  ---    ---   ; use op1, post increment & store in op1
+                      00199 ; OP_INC_RANGE      start  max    min   ; inc by 1 [op2=max, op3=min], store in op1
+                      00200 ; OP_INCX2_RANGE    start  max    min   ; inc by 2 [op2=max, op3=min], store in op1
+                      00201 ; OP_INCX3_RANGE    start  max    min   ; inc by 3 [op2=max, op3=min], store in op1
+                      00202 ; OP_INCX4_RANGE    start  max    min   ; inc by 4 [op2=max, op3=min], store in op1
+                      00203 ; OP_DEC            start  ---    ---   ; use op1, post decrement & store in op1
+                      00204 ; OP_DEC_RANGE      start  max    min   ; dec by 1 [op2=max, op3=min], store in op1
+                      00205 ; OP_DECX2_RANGE    start  max    min   ; dec by 2 [op2=max, op3=min], store in op1
+                      00206 ; OP_DECX3_RANGE    start  max    min   ; dec by 3 [op2=max, op3=min], store in op1
+                      00207 ; OP_DECX4_RANGE    start  max    min   ; dec by 4 [op2=max, op3=min], store in op1
+                      00208 ; OP_ADD            start  add    ---   ; (op1+op2), save result in op1
+                      00209 ; OP_ADD_AND        start  add    and   ; (op1+op2), AND with op3, do not save result
+                      00210 ; OP_ADD_AND_SAVE   start  add    and   ; (op1+op2), AND with op3l, save result in op1
+                      00211 ; OP_ADD_IND        start  ind    ---   ; (op1+op2(op1)), do not save result
+                      00212 ; OP_ADD_IND_SAVE   start  ind    ---   ; (op1+op2(op1)), save result in op1
+                      00213 ; OP_ADD_IND_AND    start  ind    and   ; (op1+op2(op1)), AND with op3, do not save
+                      00214 ; OP_ADD_IND_AND_SAVE srt  ind    and   ; (op1+op2(op1)), AND with op3, save in op1
+                      00215 ; OP_SUB            start  sub    ---   ; (op1-op2), save result in op1
+                      00216 ; OP_SUB_AND        start  sub    and   ; (op1-op2), AND with op3, do not save result
+                      00217 ; OP_SUB_AND_SAVE   start  sub    and   ; (op1-op2), AND with op3, save in op1
+                      00218 ; OP_SUB_IND        start  ind    ---   ; (op1-op2(op1)), do not save result
+                      00219 ; OP_SUB_IND_SAVE   start  ind    ---   ; (op1-op2(op1)), save result in op1
+                      00220 ; OP_SUB_IND_AND    start  ind    and   ; (op1-op2(op1)), AND with op3, do not save
+                      00221 ; OP_SUB_IND_AND_SAVE srt  ind    and   ; (op1-op2(op1)), AND with op3, save in op1
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 10
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00222 ; OP_RAND           seed   ---    ---   ; pseudo-random#, op1=seed, update seed
+                      00223 ; OP_RAND_RANGE     seed   max    min   ; pseudo-random# [op2=max, op3=min], op1=seed
+                      00224 
+                      00225 ; actual definitions used by the code:
+                      00226 
+  00000000            00227 OP_LIT                  equ     .00     ; use op1 as literal value
+  00000001            00228 OP_INC                  equ     .01     ; use op1, post increment & store in op1
+  00000002            00229 OP_INC_RANGE            equ     .02     ; inc by 1 [op2=max, op3=min], store in op1
+  00000003            00230 OP_INCX2_RANGE          equ     .03     ; inc by 2 [op2=max, op3=min], store in op1
+  00000004            00231 OP_INCX3_RANGE          equ     .04     ; inc by 3 [op2=max, op3=min], store in op1
+  00000005            00232 OP_INCX4_RANGE          equ     .05     ; inc by 4 [op2=max, op3=min], store in op1
+  00000006            00233 OP_DEC                  equ     .06     ; use op1, post decrement & store in op1
+  00000007            00234 OP_DEC_RANGE            equ     .07     ; dec by 1 [op2=max, op3=min], store in op1
+  00000008            00235 OP_DECX2_RANGE          equ     .08     ; dec by 2 [op2=max, op3=min], store in op1
+  00000009            00236 OP_DECX3_RANGE          equ     .09     ; dec by 3 [op2=max, op3=min], store in op1
+  0000000A            00237 OP_DECX4_RANGE          equ     .10     ; dec by 4 [op2=max, op3=min], store in op1
+  0000000B            00238 OP_ADD                  equ     .11     ; (op1+op2), save result in op1
+  0000000C            00239 OP_ADD_AND              equ     .12     ; (op1+op2), AND with op3, do not save result
+  0000000D            00240 OP_ADD_AND_SAVE         equ     .13     ; (op1+op2), AND with op3l, save result in op1
+  0000000E            00241 OP_ADD_IND              equ     .14     ; (op1+op2(op1)), do not save result
+  0000000F            00242 OP_ADD_IND_SAVE         equ     .15     ; (op1+op2(op1)), save result in op1
+  00000010            00243 OP_ADD_IND_AND          equ     .16     ; (op1+op2(op1)), AND with op3, do not save
+  00000011            00244 OP_ADD_IND_AND_SAVE     equ     .17     ; (op1+op2(op1)), AND with op3, save in op1
+  00000012            00245 OP_SUB                  equ     .18     ; (op1-op2), save result in op1
+  00000013            00246 OP_SUB_AND              equ     .19     ; (op1-op2), AND with op3, do not save result
+  00000014            00247 OP_SUB_AND_SAVE         equ     .20     ; (op1-op2), AND with op3, save in op1
+  00000015            00248 OP_SUB_IND              equ     .21     ; (op1-op2(op1)), do not save result
+  00000016            00249 OP_SUB_IND_SAVE         equ     .22     ; (op1-op2(op1)), save result in op1
+  00000017            00250 OP_SUB_IND_AND          equ     .23     ; (op1-op2(op1)), AND with op3, do not save
+  00000018            00251 OP_SUB_IND_AND_SAVE     equ     .24     ; (op1-op2(op1)), AND with op3, save in op1
+  00000019            00252 OP_RAND                 equ     .25     ; pseudo-random#, op1=seed, update seed
+  0000001A            00253 OP_RAND_RANGE           equ     .26     ; pseudo-random# [op2=max, op3=min], op1=seed
+  0000001A            00254 OP_OPCODE_MAX           equ     .26     ; MAXIMUM LEGAL OPCODE VALUE
+                      00255 
+                      00256 
+                      00257 ;--- SOME USEFUL SHORTHAND ----
+                      00258 
+  00000000            00259 HUE     equ     HUE_OFFSET
+  00000001            00260 SAT     equ     SAT_OFFSET
+  00000002            00261 BRT     equ     BRT_OFFSET
+                      00262 
+                      00263 ; Colors (applies to HUE)
+                      00264 
+  00000000            00265 RED     equ     0x00                    ; red
+  00000015            00266 ORN     equ     0x15                    ; orange
+  0000002A            00267 YEL     equ     0x2A                    ; yellow
+  00000055            00268 GRN     equ     0x55                    ; green
+  0000007F            00269 CYN     equ     0x7F                    ; cyan
+  000000AB            00270 BLU     equ     0xAB                    ; blue
+  000000D5            00271 MAG     equ     0xD5                    ; magenta
+  000000D5            00272 VIO     equ     MAG                     ; violet = magenta
+                      00273 
+                      00274 ; Channel specifiers with the 2 left shifts:
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 11
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+  00000000            00275 c00     equ     .00 <<2
+  00000004            00276 c01     equ     .01 <<2
+  00000008            00277 c02     equ     .02 <<2
+  0000000C            00278 c03     equ     .03 <<2
+  00000010            00279 c04     equ     .04 <<2
+  00000014            00280 c05     equ     .05 <<2
+  00000018            00281 c06     equ     .06 <<2
+  0000001C            00282 c07     equ     .07 <<2
+  00000020            00283 c08     equ     .08 <<2
+  00000024            00284 c09     equ     .09 <<2
+  00000028            00285 c10     equ     .10 <<2
+  0000002C            00286 c11     equ     .11 <<2
+  00000030            00287 c12     equ     .12 <<2
+  00000034            00288 c13     equ     .13 <<2
+  00000038            00289 c14     equ     .14 <<2
+  0000003C            00290 c15     equ     .15 <<2
+  00000040            00291 c16     equ     .16 <<2
+  00000044            00292 c17     equ     .17 <<2
+  00000048            00293 c18     equ     .18 <<2
+  0000004C            00294 c19     equ     .19 <<2
+  00000050            00295 c20     equ     .20 <<2
+  00000054            00296 c21     equ     .21 <<2
+  00000058            00297 c22     equ     .22 <<2
+  0000005C            00298 c23     equ     .23 <<2
+  00000060            00299 c24     equ     .24 <<2
+  00000064            00300 c25     equ     .25 <<2
+  00000068            00301 c26     equ     .26 <<2
+  0000006C            00302 c27     equ     .27 <<2
+  00000070            00303 c28     equ     .28 <<2
+  00000074            00304 c29     equ     .29 <<2
+  00000078            00305 c30     equ     .30 <<2
+  0000007C            00306 c31     equ     .31 <<2
+  00000080            00307 c32     equ     .32 <<2
+  00000084            00308 c33     equ     .33 <<2
+  00000088            00309 c34     equ     .34 <<2
+  0000008C            00310 c35     equ     .35 <<2
+  00000090            00311 c36     equ     .36 <<2
+  00000094            00312 c37     equ     .37 <<2
+  00000098            00313 c38     equ     .38 <<2
+  0000009C            00314 c39     equ     .39 <<2
+  000000A0            00315 c40     equ     .40 <<2
+  000000A4            00316 c41     equ     .41 <<2
+  000000A8            00317 c42     equ     .42 <<2
+  000000AC            00318 c43     equ     .43 <<2
+  000000B0            00319 c44     equ     .44 <<2
+  000000B4            00320 c45     equ     .45 <<2
+  000000B8            00321 c46     equ     .46 <<2
+  000000BC            00322 c47     equ     .47 <<2
+  000000C0            00323 c48     equ     .48 <<2
+  000000C4            00324 c49     equ     .49 <<2
+  000000C8            00325 c50     equ     .50 <<2
+  000000CC            00326 c51     equ     .51 <<2
+  000000D0            00327 c52     equ     .52 <<2
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 12
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+  000000D4            00328 c53     equ     .53 <<2
+  000000D8            00329 c54     equ     .54 <<2
+  000000DC            00330 c55     equ     .55 <<2
+  000000E0            00331 c56     equ     .56 <<2
+  000000E4            00332 c57     equ     .57 <<2
+  000000E8            00333 c58     equ     .58 <<2
+  000000EC            00334 c59     equ     .59 <<2
+  000000F0            00335 c60     equ     .60 <<2
+  000000F4            00336 c61     equ     .61 <<2
+  000000F8            00337 c62     equ     .62 <<2
+  000000FC            00338 c63     equ     .63 <<2
+                      00339 
+                      00340         
+                      00034 #include <APP_INCLUDE_FILE>             ; 4: Application include file
+                      00001 ;*****************************************************************************
+                      00002 ; wClock - common header file
+                      00003 ;*****************************************************************************
+                      00004 ;
+                      00005 ;    Filename:          wClock.inc
+                      00006 ;    Author, Company:   Alden Hart, Luke's Lights
+                      00007 ;    Date/Time/Rev:     091015
+                      00008 ;
+                      00009 ;    'sproke notes: If shit breaks, look in the following places:
+                      00010 ;       - test ISR dispatcher for not crossing a page boundary
+                      00011 ;       - look for all occurrences of "HACK HACK"
+                      00012 
+                      00013 ;------ Application Switches -----      
+                      00014 ; The default initialization routines are provided in the device file: d18fxxxx.asm
+                      00015 ; Setting an _EXTERNAL switch TRUE will use an init located in some other file.
+                      00016 ; You must also set up an extern in the d18fxxxx.asm file and a global in the 
+                      00017 ; target application file to override the default init.
+                      00018 
+  00000001            00019 INIT_PORTS_EXTERNAL     equ     TRUE    ; set true to use an external init routine
+  00000001            00020 INIT_T0_EXTERNAL        equ     TRUE    ; uses the one in wClock.asm
+  00000001            00021 INIT_T1_EXTERNAL        equ     TRUE    ; uses the one in led_ckt4520.asm
+  00000001            00022 INIT_WATCHDOG_TIMER     equ     TRUE    ; set if WDT enabled. See WDT_INIT
+                      00023 
+                      00024 ;----- Assembly-Time Switches ------
+                      00025 
+  00000000            00026 RX_ENABLED              equ     FALSE   ; enable RX ISR processing
+  00000000            00027 ICD_ENABLED             equ     FALSE   ; enable ICD2 debugging
+  00000001            00028 UNITS_ENABLED           equ     TRUE    ; enable unit tests
+  00000001            00029 DIAGNOSTICS_ENABLED     equ     TRUE    ; takes up space and time
+                      00030 
+  00000BDC            00031 CLK_TIMER               equ     0x0BDC  ; value for prescale 128 (rev 1)
+                      00032 ;CLK_TIMER              equ     0xC000  ; TEST value for prescale 128
+                      00033 
+                      00034 ;----- switch port assignments and equates
+                      00035 
+  00000008            00036 SW_DEBOUNCE_MAX         equ     .8      ; # of 6.66 ms cycles to debounce switch
+  0000003C            00037 SW_HELD_COUNT           equ     .60     ; # of 6.66 ms increments before advance
+  00000000            00038 SW_STATE_ON_bp          equ     .00     ; 1=switch is on  0=switch is off
+  00000001            00039 SW_STATE_RISING_bp      equ     .01     ; rising edge (this state can be removed)
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 13
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+  00000002            00040 SW_STATE_FALLING_bp     equ     .02     ; falling edge (this state can be removed)
+                      00041 
+                      00042 ;----- Table program memory allocation -----
+                      00043 ; The following  tables must be aligned on a 0x100 page boundary
+                      00044 ; Look at the eFruit.map file for optimal placement
+                      00045 
+  00002000            00046 BASE_OF_TABLES          equ     0x2000
+  00000600            00047 HSB_TABLES_LEN          equ     0x600
+                      00048 ;HSB_TABLES_LEN         equ     0x00
+                      00049 
+  00002000            00050 HSB_TABLES_START        equ     BASE_OF_TABLES
+  00002600            00051 CUE_TABLES_START        equ     HSB_TABLES_START + HSB_TABLES_LEN 
+                      00052 ; Cue tables can use the rest of program memory if they need to, and should be last
+                      00053 
+                      00054 ;--- Flag values for app_flags ----
+                      00055 ; Notes on TIME bits:
+                      00056 ; - TIME_5MS is an approximate flag set by cycle processing (for switch timing)
+                      00057 ; - The other TIME flags are managed by CLK_IRQ
+                      00058 
+  00000000            00059 DIRTY_BIT               equ     0       ; set to signal new dimmer value
+  00000001            00060 CYCLE_START_FLAG        equ     1       ; set once per cycle during BAM interval
+  00000002            00061 SWITCH_READ_FLAG        equ     2       ; is set approx every 6 ms
+  00000003            00062 SECOND_FLAG             equ     3       ; is set every second (exactly)
+                      00063 
+                      00064 ;---- Word to channel mapping ----
+                      00065 
+  00000000            00066 ITS             equ     .0              ; Channel 0 is "IT'S"
+  00000001            00067 HALF            equ     .1
+  00000002            00068 TEN_            equ     .2              ; differentiate from hour TEN
+  00000003            00069 QUARTER         equ     .3
+  00000004            00070 TWENTY          equ     .4
+  00000005            00071 FIVE_           equ     .5              ; differentiate from hour FIVE
+  00000006            00072 MINUTES         equ     .6
+  00000007            00073 PAST            equ     .7
+  00000008            00074 TO_             equ     .8              ; must have an underscore
+  00000009            00075 ONE             equ     .9
+  0000000A            00076 TWO             equ     .10
+  0000000B            00077 THREE           equ     .11
+  0000000C            00078 FOUR            equ     .12
+  0000000D            00079 FIVE            equ     .13
+  0000000E            00080 SIX             equ     .14
+  0000000F            00081 SEVEN           equ     .15
+  00000010            00082 EIGHT           equ     .16
+  00000011            00083 NINE            equ     .17
+  00000012            00084 TEN             equ     .18
+  00000013            00085 ELEVEN          equ     .19
+  00000014            00086 TWELVE          equ     .20
+  00000015            00087 OCLOCK          equ     .21
+                      00088 ;PLUS_1         equ     .22
+                      00089 ;PLUS_2         equ     .23
+                      00090 ;PLUS_3         equ     .24
+                      00091 ;PLUS_4         equ     .25
+                      00035 
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 14
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00036 ;----- MPLIB settings and include files------
+                      00037                                         ; lower-level includes
+                      00038         list    t=OFF                   ; truncate long listing lines
+                      00039         ERRORLEVEL -302                 ; turn off register bank messages
+                      00040 ;       ERRORLEVEL -306, -302           ; turn off crossing page boundary msgs
+                      00041         EXPAND                          ; expand macros in disassembly listing  
+                      00042 
+                      00043 ;------ Exports (globals) -----
+                      00044 
+  0000                00045         global  app_flags               ; used by led_ckt_XXXX, led_fader
+  0000                00046         global  cycle_prescale
+  0000                00047         global  temp_tblptrh
+  0000                00048         global  temp_tblptrl
+                      00049 
+                      00050     if INIT_T0_EXTERNAL
+  0000                00051         global  T0_INIT                 ; use local timer0 init
+  0000                00052         global  T0_STOP                 ; use local timer0 init
+  0000                00053         global  T0_START                ; use local timer0 start
+                      00054     endif
+                      00055 
+                      00056 ;----- Externals -----
+                      00057 
+                      00058         ; from d18F____.asm device module
+  0000                00059         extern  MASTER_INIT
+  0000                00060         extern  WDT_START
+                      00061 
+                      00062         ; from led_ckt____.asm circuit module
+  0000                00063         extern  chn_num
+  0000                00064         extern  ckt_num 
+  0000                00065         extern  ckt_level               
+  0000                00066         extern  CKT_INIT
+  0000                00067         extern  CKT_ISR
+  0000                00068         extern  CKT_WRITE_CHANNEL
+  0000                00069         extern  CKT_WRITE_CIRCUIT
+  0000                00070         extern  T1_START
+  0000                00071         extern  UT_CKT
+                      00072     if MONOCHROME_MODE
+  0000                00073         extern  chn_level
+                      00074     else
+                      00075         extern  red_level
+                      00076         extern  grn_level
+                      00077         extern  blu_level
+                      00078         extern  hue_level
+                      00079         extern  sat_level
+                      00080         extern  brt_level
+                      00081     endif
+                      00082 
+                      00083         ; from led_fader.asm module
+  0000                00084         extern  fdr_level
+  0000                00085         extern  FDR_DISPATCH
+  0000                00086         extern  UT_CMD
+                      00087 
+                      00088         ; from led_cue.asm module
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 15
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00089 
+  0000                00090         extern  CUE_CLK_READOUT         ; application specific symbols
+  0000                00091         extern  cue_clk_min             ; application specific symbols
+  0000                00092         extern  cue_clk_hour            ; application specific symbols
+                      00093 
+  0000                00094         extern  PLAY_INIT               ; led_cue.asm general symbols
+  0000                00095         extern  CUE_WATCHER             ; led_cue.asm general symbols
+  0000                00096         extern  UT_PLAY                 ; led_cue.asm general symbols
+                      00097 
+                      00098         ; from led_hsb.asm module
+                      00099     if MONOCHROME_MODE == FALSE
+                      00100         extern  HSB_TO_RGB
+                      00101         extern  UT_HSB
+                      00102     endif
+                      00103 
+                      00104 ;------ RAM definitions -----
+                      00105 
+                      00106 ;##### BANK 0 #####                     ; shared by modules, allocated by linker
+                      00107 UDATA_BANK_0_ACS        udata_acs
+                      00108 
+                      00109 ;----- general use variables ----
+000000                00110 app_flags       res     1               ; application flags (see app.inc file)
+000001                00111 cycle_counter   res     1               ; counts cycles to deal with prescale
+000002                00112 cycle_counter_hi res    1               ; just for yuks
+000003                00113 cycle_prescale  res     1               ; <b6-b0>: 256, 64, 16, 8, 4, 2, 1
+                      00114 
+000004                00115 clk_hour        res     1               ; hours counter (1-12)
+000005                00116 clk_min         res     1               ; minutes counter (0-59)
+000006                00117 clk_sec         res     1               ; seconds counter (0-59)
+000007                00118 clk_subsec      res     1               ; sub-second counter
+                      00119 
+000008                00120 sw_state        res     1               ; state for reading and debouncing switch
+000009                00121 sw_debounce     res     1               ; switch debounce counter
+00000A                00122 sw_proc_state   res     1               ; state for switch state machine
+00000B                00123 sw_held_counter res     1               ; down counter for switch held state
+                      00124 
+00000C                00125 temp_tblptrh    res     1               ; used by "switch" macro.
+00000D                00126 temp_tblptrl    res     1               ; no other use is permitted!
+                      00127 
+                      00128 ;----- lo priority ISR variables ----   ; I2C subsystem
+00000E                00129 isrclk_W        res     1               ; W reg save
+00000F                00130 isrclk_status   res     1               ; STATUS reg save
+                      00131 
+                      00132 ;###############################
+                      00133 ;##### BEGIN CODE SECTION ######
+                      00134 ;###############################
+                      00135 
+                      00136 START_OF_CODE   code
+                      00137 
+                      00138 ;*****************************************************************************
+                      00139 ;************************ RESET & INTERRUPT VECTORS **************************
+                      00140 ;*****************************************************************************
+                      00141 
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 16
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00142         org     0x000000        ; reset vector  
+000000 0000           00143         nop                     ; for ICD
+000002 EF?? F???      00144         goto    START
+                      00145 
+                      00146         org     0x000008        ; high priority interrupt vector
+000008 EF?? F???      00147         goto    CLK_ISR
+                      00148    
+                      00149         org     0x000018        ; low priority interrupt vector
+000018 EF?? F???      00150         goto    CKT_ISR
+                      00151 
+                      00152 ;*****************************************************************************
+                      00153 ;******* Initialization and Unit Tests ***************************************
+                      00154 ;*****************************************************************************
+                      00155 
+                      00156 ;----- Device and Sub-System Starts -----
+                      00157 ; Be careful of the ordering of these routines. 
+                      00158 ; Also, some unit tests might be better run before the full init is done
+                      00159         
+                      00160         org     0x00002A                ; start code region
+                      00161                                 ; order
+00002A EC?? F???      00162 START   call    MASTER_INIT     ; 01    ; general purpose inits
+00002E EC?? F???      00163         call    CKT_INIT        ; 02    ; initialize circuit driver routines
+000032 EC?? F???      00164         call    PLAY_INIT       ; 04    ; init playlist table & start first list
+                      00165 
+000036 EC?? F???      00166         call    UNIT_TESTS      ; this is a good spot to run these.
+                      00167 
+00003A EC?? F???      00168         call    T1_START        ; 03    ; see ckts module
+                      00169 ;       call    WDT_START       ; 04    ; start watchdog timer
+00003E EC?? F???      00170         call    CLK_INIT        ; 05    ; init and start clock routines
+000042 EC?? F???      00171         call    SWITCH_INIT
+                      00172 
+000046 8EF2           00173         bsf     INTCON,GIEH     ; last-1 ; enable hi and lo interrupts
+000048 8CF2           00174         bsf     INTCON,GIEL     ; last
+00004A D???           00175         bra     MAIN_LOOP       ; start the main loop
+                      00176 
+                      00177     if UNITS_ENABLED                    ; unit testing "framework"
+00004C                00178 UNIT_TESTS
+                      00179 ;       call    UT_CKT                  ; call circuit unit tests
+                      00180 ;       call    UT_HSB                  ; call hsb/rgb unit tests 
+                      00181 ;       call    UT_CMD                  ; call command and fader unit tests
+                      00182 ;       call    UT_PLAY                 ; call playlist and cue unit tests
+                      00183 ;       call    UT_MAIN                 ; call UT's in this file
+00004C 0012           00184         return
+                      00185     endif
+                      00186 
+                      00187 ;*****************************************************************************
+                      00188 ;******* Main Loop ***********************************************************
+                      00189 ;*****************************************************************************
+                      00190 
+                      00191 ; ***** Main Loop *****
+                      00192 
+00004E                00193 MAIN_LOOP                               
+00004E B2??           00194 OUTER   btfsc   app_flags,CYCLE_START_FLAG
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 17
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+000050 EC?? F???      00195         call    CYCLE_PROCESSING        ; do fader cycle processing
+                      00196 
+000054 B4??           00197         btfsc   app_flags,SWITCH_READ_FLAG
+000056 EC?? F???      00198         call    SWITCH_PROCESSING
+                      00199 
+00005A B6??           00200         btfsc   app_flags,SECOND_FLAG   ; called once per second
+00005C EC?? F???      00201         call    CLK_PROCESSING          ; process clock tick from CLK_ISR)
+                      00202 
+000060 EF?? F???      00203         goto    OUTER
+                      00204 
+                      00205 
+                      00206 ;******************************************************************************
+                      00207 ; CYCLE_PROCESSING
+                      00208 ; Perform this on each cycle start
+                      00209 ;
+                      00210 ; Processing: 
+                      00211 ;       - do start-of-cycle tasks such as loading presets and sequences
+                      00212 ;       - process the the extra channels next
+                      00213 ;       - then go through every channel - running the commands
+                      00214 ;       - then do HSB processing and CKT table load if DIRTY_BIT is set
+                      00215 ;       - just for yuks break out after each triple for IO
+                      00216 
+000064                00217 CYCLE_PROCESSING
+000064 0004           00218         clrwdt                                  ; clear the watchdog timer
+000066 92??           00219         bcf     app_flags,CYCLE_START_FLAG      ; clear cycle flag
+000068 84??           00220         bsf     app_flags,SWITCH_READ_FLAG
+00006A EC?? F???      00221         call    CYCLE_ADVANCE_PRESCALE          ; advance prescale to next value
+                      00222 
+00006E                00223 CYC_01  ; start-of-cycle processing (watch, presets, sequences)
+                      00224 ;       call    CUE_WATCHER             ; test WATCH for cue DONE
+                      00225 
+00006E                00226 CYC_02  ; process all command channels
+00006E 6A??           00227         clrf    chn_num
+000070 50??           00228 CYC_03  movf    chn_num,W
+000072 EC?? F???      00229         call    CYCLE_RUN_CHANNEL
+000076 2A??           00230         incf    chn_num,F               ; increment to next channel
+000078 0E16           00231         movlw   CHN_NUM_MAX+1
+00007A 62??           00232         cpfseq  chn_num
+00007C D???           00233         bra     CYC_03
+                      00234 
+00007E 90??           00235 CYC_x   bcf     app_flags,DIRTY_BIT
+000080 0012           00236         return
+                      00237 
+                      00238 ;---- CYCLE_RUN_CHANNEL - MONOCHROME VERSION ----
+                      00239 ; Run a monochrome channel given the channel number
+                      00240 ;
+                      00241 ; INPUTS: chn_num       channel number to run
+                      00242 ;
+                      00243 ; Profile: Takes about 450 cycles when it writes, 150 when it doesn't.
+                      00244 ; Budgeted as many as 700 cycles for this. Possibilites for optimization:
+                      00245 ;       - Organize triplets in contiguous blocks in banks and eliminate the 
+                      00246 ;         SAT and BRT calls to CMD_SET_CMD_TABLE_PTR by simply advancing 
+                      00247 ;         FSR2 manually. Save 18 x 2 cycles minus pointer aritmetic
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 18
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00248 ;       - Build the entire thing into a macro and eliminate calls to
+                      00249 ;         CMD_SET_CMD_TABLE_PTR altogether - save 18 x 3 cycles.
+                      00250 
+000082                00251 CYCLE_RUN_CHANNEL
+000082 90??           00252         bcf     app_flags,DIRTY_BIT     ; clear dirty bit
+000084 EC?? F???      00253         call    FDR_DISPATCH            ; process fader and return level...
+000088 C??? F???      00254         movff   fdr_level,chn_level     ; move fader level to channel level
+00008C B0??           00255         btfsc   app_flags,DIRTY_BIT     ; skip ahead if not dirty (bit set)
+00008E EC?? F???      00256         call    CKT_WRITE_CHANNEL       ; write level to CKT table
+000092 0012           00257         return
+                      00258 
+                      00259 ;---- CYCLE_ADVANCE_PRESCALE ----
+                      00260 ; Advance prescale to next value. Prescale bits only "fire" on transitions
+                      00261 ;
+                      00262 ; INPUTS
+                      00263 ;       - cycle_counter                 ; counts cycles
+                      00264 ;       - cycle_prescale                ; <b6-b0>: 256, 64, 16, 8, 4, 2, 1
+                      00265 ;                                       ; <b7> should be zero
+                      00266 ;
+                      00267 ; Profile: takes between 25 and 65 cycles, mostly on the lower end of this.
+                      00268 
+000094                00269 CYCLE_ADVANCE_PRESCALE
+000094 0E01           00270         movlw   0x01
+000096 6E??           00271         movwf   cycle_prescale          ; always set 1
+000098 2A??           00272         incf    cycle_counter,F         ; advance cycle counter
+00009A E1??           00273         bnz     CAP64
+00009C 8C??           00274         bsf     cycle_prescale,6        ; set 256 on all zeros
+00009E 2A??           00275         incf    cycle_counter_hi,F      ; just to keep track of it
+0000A0 50??           00276 CAP64   movf    cycle_counter,W         ; test and set 64
+0000A2 0B3F           00277         andlw   0x3F
+0000A4 E1??           00278         bnz     CAP16
+0000A6 8A??           00279         bsf     cycle_prescale,5
+0000A8 50??           00280 CAP16   movf    cycle_counter,W         ; test and set 16
+0000AA 0B0F           00281         andlw   0x0F
+0000AC E1??           00282         bnz     CAP8
+0000AE 88??           00283         bsf     cycle_prescale,4
+0000B0 50??           00284 CAP8    movf    cycle_counter,W         ; test and set 8
+0000B2 0B07           00285         andlw   0x07
+0000B4 E1??           00286         bnz     CAP4
+0000B6 86??           00287         bsf     cycle_prescale,3
+0000B8 50??           00288 CAP4    movf    cycle_counter,W         ; test and set 4
+0000BA 0B03           00289         andlw   0x03
+0000BC E1??           00290         bnz     CAP2
+0000BE 84??           00291         bsf     cycle_prescale,2
+0000C0 A0??           00292 CAP2    btfss   cycle_counter,0         ; test and set 2
+0000C2 82??           00293         bsf     cycle_prescale,1
+0000C4 0012           00294         return
+                      00295 
+                      00296 ;******************************************************************************
+                      00297 ;**** CLOCK ROUTINES **********************************************************
+                      00298 ;******************************************************************************
+                      00299 ; Control is transfered from one routine to another. Handoff is:
+                      00300 ;   CLK_INIT - one time initialization (on reset)
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 19
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00301 ;   CLK_ISR - reads timer, handles seconds (& sub-seconds). Sets TIME_SECOND
+                      00302 ;   CLK_PROCESSING - generates full clock count from seconds, calls READOUT
+                      00303 ;   CUE_CLK_READOUT - calls cues to read out time. Part of CUE subsystem
+                      00304 ;
+                      00305 ; Additional routines are:
+                      00306 ;   CLK_INCREMENT - increment clock by W minutes
+                      00307 ;   CLK_DECREMENT - decrement clock by W minutes
+                      00308 ;   T0_INIT  - local version of init to initialize timer0 for the clock
+                      00309 ;   T0_STOP  - local version of stop timer0
+                      00310 ;   T0_START - local version of start timer0
+                      00311 
+                      00312 ;******************************************************************************
+                      00313 ; CUE_CLK_READOUT - read out time (See led_cue.asm)
+                      00314 ;
+                      00315 
+                      00316 ;******************************************************************************
+                      00317 ; CLK_INIT - Initialize clock sub-system
+                      00318 
+0000C6                00319 CLK_INIT
+0000C6 6A??           00320         clrf    clk_subsec
+0000C8 6A??           00321         clrf    clk_sec
+0000CA 6A??           00322         clrf    clk_min
+0000CC 0E01           00323         movlw   .1                      ; start at 1 (not zero)
+0000CE 6E??           00324         movwf   clk_hour
+0000D0 96??           00325         bcf     app_flags,SECOND_FLAG
+0000D2 EC?? F???      00326         call    T0_START                ; start the timer
+0000D6 0012           00327         return
+                      00328 
+                      00329 ;******************************************************************************
+                      00330 ; CLK_ISR - Implements clock timing and flags clock transitions
+                      00331 ;
+                      00332 ; INPUTS: <none>        it's an ISR
+                      00333 ;
+                      00334 ; USES: app_flags       ; TIME_SECOND flag
+                      00335 ;
+                      00336 ; Note: This routine could also make use of a sub-second counter, 
+                      00337 ; except we use the timer to count out as close to 1 second as we can.
+                      00338 
+0000D8 6E??           00339 CLK_ISR movwf   isrclk_W                ; save W reg
+0000DA CFD8 F???      00340         movff   STATUS,isrclk_status    ; save STATUS reg
+0000DE 0EDC           00341         movlw   LOW CLK_TIMER           ; reload the timer
+0000E0 6ED6           00342         movwf   TMR0L
+0000E2 0E0B           00343         movlw   HIGH CLK_TIMER          ; load HI last
+0000E4 6ED7           00344         movwf   TMR0H
+0000E6 86??           00345         bsf     app_flags,SECOND_FLAG   ; set TIME_SECOND flag
+0000E8 94F2           00346         bcf     INTCON,TMR0IF           ; clear timer INT flag or it will keep IRQ'ing
+0000EA 50??           00347         movf    isrclk_W,W              ; restore W reg
+0000EC C??? FFD8      00348         movff   isrclk_status,STATUS    ; do this last
+0000F0 0010           00349         retfie
+                      00350 
+                      00351 ;******************************************************************************
+                      00352 ; CLK_PROCESSING - process the new second (from CLK_ISR)
+                      00353 ; CLK_INCREMENT - increment clock by W minutes
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 20
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00354 ; CLK_DECREMENT - decrement clock by W minutes
+                      00355 ;
+0000F2                00356 CLK_PROCESSING
+0000F2 96??           00357         bcf     app_flags,SECOND_FLAG   ; clear the seconds flag
+0000F4 2A??           00358         incf    clk_sec,F               ; count seconds and process rollover
+0000F6 50??           00359         movf    clk_sec,W
+0000F8 083C           00360         sublw   .60
+0000FA E1??           00361         bnz     CLP_NOREADOUT           ; exit without updating display
+0000FC 6A??           00362         clrf    clk_sec                 ; reset seconds counter
+0000FE 0E01           00363         movlw   1
+000100 EC?? F???      00364         call    CLK_INCREMENT           ; increment the clock
+000104 C??? F???      00365         movff   clk_hour,cue_clk_hour
+000108 C??? F???      00366         movff   clk_min,cue_clk_min
+00010C EC?? F???      00367         call    CUE_CLK_READOUT         ; call the clock display routines
+000110                00368 CLP_NOREADOUT
+000110 0012           00369         return
+                      00370 
+                      00371 ;--- CLK_INCREMENT
+                      00372 ; increment clock by number of minutes in W
+                      00373 
+000112                00374 CLK_INCREMENT
+                      00375         ; increment minutes and process minutes rollover
+000112 26??           00376         addwf   clk_min,F               ; no carry in
+000114 50??           00377         movf    clk_min,W
+000116 083B           00378         sublw   .59
+000118 E7??           00379         bnn     CLK_IX
+00011A 6A??           00380         clrf    clk_min
+                      00381 
+                      00382         ; process hours and 12 hour rollover
+00011C 2A??           00383         incf    clk_hour,F
+00011E 50??           00384         movf    clk_hour,W
+000120 080D           00385         sublw   .13                     ; hours run 1 - 12 (no zero)
+000122 E1??           00386         bnz     CLK_IX
+000124 6A??           00387         clrf    clk_hour                ; reset hour to '1'
+000126 2A??           00388         incf    clk_hour,F
+000128 0012           00389 CLK_IX  return
+                      00390 
+                      00391 ;--- CLK_DECREMENT
+                      00392 ; decrement clock by number of minutes in W
+                      00393 
+00012A                00394 CLK_DECREMENT
+                      00395         ; decrement minutes and process minutes rollunder
+00012A 5E??           00396         subwf   clk_min,F               ; no borrow in
+00012C 50??           00397         movf    clk_min,W
+00012E E7??           00398         bnn     CLK_DX
+000130 0F3C           00399         addlw   .60                     ; adjust for 60 min modulus
+000132 6E??           00400         movwf   clk_min
+                      00401 
+                      00402         ; process hours and 12 hour rollover
+000134 06??           00403         decf    clk_hour,F
+000136 50??           00404         movf    clk_hour,W
+000138 E6??           00405         bn      CLK_DH                  ; kinda ugly but it works
+00013A E0??           00406         bz      CLK_DH
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 21
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+00013C 0012           00407         return  
+00013E 0E0C           00408 CLK_DH  movlw   .12
+000140 6E??           00409         movwf   clk_hour                ; reset hour to '12'
+000142 0012           00410 CLK_DX  return
+                      00411 
+                      00412 
+                      00413 ;******************************************************************************
+                      00414 ; TIMER0 is used for CLOCK routines
+                      00415 ; T0_INIT  - Initialize timer0
+                      00416 ; T0_STOP  - Stop timer0
+                      00417 ; T0_START - Start timer0
+                      00418 
+                      00419 ;T0CON_INIT     equ     b'00000000'     ; TEST VALUE - NO PRESCALER
+  00000006            00420 T0CON_INIT      equ     b'00000110'     ; 7 - TMR0ON = 0 (0FF, see pg 123)
+                      00421                                         ; 6 - T08BIT = 0 (as 16 bit timer)
+                      00422                                         ; 5 - T0CS = 0 (internal clock)
+                      00423                                         ; 4 - TOSC = 0 (lo to hi transition)
+                      00424                                         ; 3 - PSA = 0 (use the prescaler)
+                      00425                                         ; 2-0 T0PS = 110 (128 prescale)
+                      00426 
+  00000086            00427 T0CON_START     equ     T0CON_INIT | 0x80 ; TMR0ON = 1 (0N)
+  000000DC            00428 TMR0L_INIT      equ     LOW CLK_TIMER   ; initial LO value
+  0000000B            00429 TMR0H_INIT      equ     HIGH CLK_TIMER  ; initial HI value
+                      00430 
+000144                00431 T0_INIT
+000144 0E06           00432 T0_STOP movlw   T0CON_INIT
+000146 6ED5           00433         movwf   T0CON
+000148 94F2           00434         bcf     INTCON,TMR0IF           ; clear interrupt flag
+00014A 9AF2           00435         bcf     INTCON,TMR0IE           ; disable interrupts
+00014C 0012           00436         return
+                      00437 
+00014E                00438 T0_START 
+00014E 0E86           00439         movlw   T0CON_START
+000150 6ED5           00440         movwf   T0CON
+000152 0EDC           00441         movlw   TMR0L_INIT
+000154 6ED6           00442         movwf   TMR0L
+000156 0E0B           00443         movlw   TMR0H_INIT
+000158 6ED7           00444         movwf   TMR0H
+00015A 94F2           00445         bcf     INTCON,TMR0IF           ; clear interrupt flag
+00015C 8AF2           00446         bsf     INTCON,TMR0IE           ; enable interrupts
+00015E 84F1           00447         bsf     INTCON2,TMR0IP          ; 1 = high priority
+                      00448 ;       bcf     INTCON2,TMR0IP          ; 0 = low priority
+000160 0012           00449         return
+                      00450 
+                      00451 
+                      00452 ;******************************************************************************
+                      00453 ;**** SWITCH ROUTINES *********************************************************
+                      00454 ;******************************************************************************
+                      00455 
+000162                00456 SWITCH_INIT
+000162 94??           00457         bcf     app_flags,SWITCH_READ_FLAG
+000164 6A??           00458         clrf    sw_state                        ; reset debounce state
+000166 6A??           00459         clrf    sw_proc_state                   ; reset processing state
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 22
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+000168 0012           00460         return
+                      00461 
+                      00462 ;*****************************************************************************
+                      00463 ; SWITCH_PROCESSING - executed on each switch read cycle
+                      00464 ;
+                      00465 ; The switch is read once every LED cycle (6.66 ms). 
+                      00466 ; The switch is processed at 2 layers:
+                      00467 ;   - switch read and debounce layer - returns clean switch state
+                      00468 ;   - processing layer - what to do about it. 
+                      00469 ;
+                      00470 ; Simple state machine for switch processing:
+                      00471 ;
+                      00472 ;    SW_NOT_PRESSED - Button is not pushed
+                      00473 ;       Take no action.
+                      00474 ;
+                      00475 ;    SW_PRESSED - Button just pushed
+                      00476 ;       Increment clock by 5 minutes and and read out
+                      00477 ;       Start switch_held down-counter
+                      00478 ;       Transition to SW_PROC_STATE_HELD
+                      00479 ;
+                      00480 ;    SW_HELD - Button held down
+                      00481 ;       If switch released (READ_STATE_ON = 0), revert to NOT_PRESSED state
+                      00482 ;       Count down switch_held counter
+                      00483 ;       If counter goes to zero, 
+                      00484 ;          - increment by 5 minutes and read out
+                      00485 ;          - restart counter
+                      00486 
+00016A                00487 SWITCH_PROCESSING
+                      00488         ; determine current switch state and perform debouncing
+00016A 94??           00489         bcf     app_flags,SWITCH_READ_FLAG      ; clear switch flag
+00016C EC?? F???      00490         call    SWITCH_READ                     ; read switch state
+                      00491 
+                      00492         ; dispatch on state bits
+000170 A0??           00493         btfss   sw_state,SW_STATE_ON_bp         ; test if switch is on
+000172 0012           00494         return                                  ; return if sw is off
+000174 B2??           00495         btfsc   sw_state,SW_STATE_RISING_bp     ; test if rising edge
+000176 D???           00496         bra     SW_RISING
+                      00497         ; fall through to ON state
+                      00498 
+000178                00499 SW_ON           ; execute this code block if switch is ON and not RISING
+000178 06??           00500         decf    sw_held_counter,F
+00017A A4D8           00501         btfss   STATUS,Z
+00017C 0012           00502         return          
+                      00503         ; falls through to rising which acts like an auto-button push
+                      00504 
+00017E                00505 SW_RISING       ; execute this code block on RISING edge        
+00017E 0E3C           00506         movlw   SW_HELD_COUNT                   ; load hold counter
+000180 6E??           00507         movwf   sw_held_counter
+000182 0E05           00508         movlw   .05
+000184 EC?? F???      00509         call    CLK_INCREMENT                   ; increment the clock
+000188 C??? F???      00510         movff   clk_hour,cue_clk_hour
+00018C C??? F???      00511         movff   clk_min,cue_clk_min
+000190 EC?? F???      00512         call    CUE_CLK_READOUT                 ; call clock display routines
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 23
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+000194 0012           00513         return
+                      00514 
+                      00515 ;*****************************************************************************
+                      00516 ; SWITCH_READ ...and debouncing
+                      00517 ; 
+                      00518 ; A switch has 3 state bits: ON/OFF, RISING, FALLING. 
+                      00519 ; These are reported as bits in sw_read_state: 
+                      00520 ;
+                      00521 ;    SW_STATE_ON_bp     1 = switch is on, 0 = switch is off
+                      00522 ;    SW_STATE_RISING_bp 1 = switch has just turned on. Persists for 1 read pass
+                      00523 ;    SW_STATE_FALLING_bp 1 = switch has just turned off. Persists for 1 read pass
+                      00524 ;
+                      00525 ; Debounce interval is controlled via SW_DEBOUNCE_MAX. The debounce counter 
+                      00526 ; counts to max to turn on, down to 1 to turn off.
+                      00527 
+000196                00528 SWITCH_READ
+000196 92??           00529         bcf     sw_state,SW_STATE_RISING_bp     ; clear previous rising state
+000198 94??           00530         bcf     sw_state,SW_STATE_FALLING_bp    ; clear previous falling state
+00019A B0??           00531         btfsc   sw_state,SW_STATE_ON_bp         ; branch on current ON/OFF state        
+00019C EF?? F???      00532         goto    PS_ON
+                      00533 
+0001A0 B080           00534 PS_OFF  btfsc   switch01p,switch01b             ; skip if switch is closed (0)
+0001A2 0012           00535         return                                  ; switch open: exit w/no changes
+0001A4 2A??           00536         incf    sw_debounce,F                   ; increment debounce counter
+0001A6 50??           00537         movf    sw_debounce,W
+0001A8 0808           00538         sublw   SW_DEBOUNCE_MAX                 ; test against max
+0001AA A8D8           00539         btfss   STATUS,N
+0001AC 0012           00540         return                                  ; exit - remain in OFF state
+0001AE 82??           00541         bsf     sw_state,SW_STATE_RISING_bp     ; sw closed - set rising edge...
+0001B0 80??           00542         bsf     sw_state,SW_STATE_ON_bp         ;...and ON state
+0001B2 0012           00543         return
+                      00544 
+0001B4 A080           00545 PS_ON   btfss   switch01p,switch01b             ; skip if switch is open (1)
+0001B6 0012           00546         return                                  ; switch closed: exit w/no changes
+0001B8 06??           00547         decf    sw_debounce,F                   ; decrement debounce counter
+0001BA 50??           00548         movf    sw_debounce,W
+0001BC A4D8           00549         btfss   STATUS,Z
+0001BE 0012           00550         return                                  ; exit - remain in ON state
+0001C0 84??           00551         bsf     sw_state,SW_STATE_FALLING_bp    ; sw opened - sef falling edge...
+0001C2 90??           00552         bcf     sw_state,SW_STATE_ON_bp         ;...and OFF state
+0001C4 0012           00553         return
+                      00554 
+                      00555 
+                      00556 ;*****************************************************************************
+                      00557 ;***** UNIT TESTS ************************************************************
+                      00558 ;*****************************************************************************
+                      00559 
+0001C6                00560 UT_MAIN
+                      00561     if UNITS_ENABLED
+                      00562 ;       goto    UT_CYCLE_ADVANCE_PRESCALE ; never returns
+                      00563 ;       goto    UT_CYCLE_RUN_CHANNEL      ; never returns
+                      00564 ;       call    UT_TEST_CLOCK           ; test clock functions
+0001C6 EC?? F???      00565         call    UT_CYCLE_PROCESSING
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 24
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00566     endif
+0001CA 0012           00567         return
+                      00568 
+                      00569     if UNITS_ENABLED
+                      00570 
+0001CC                00571 UT_CYCLE_ADVANCE_PRESCALE
+0001CC 0EFD           00572         movlw   0xFD
+0001CE 6E??           00573         movwf   cycle_counter
+0001D0 EC?? F???      00574 UTCAP   call    CYCLE_ADVANCE_PRESCALE  
+0001D4 EF?? F???      00575         goto    UTCAP
+                      00576 
+0001D8                00577 UT_CYCLE_RUN_CHANNEL
+0001D8 0E03           00578         movlw   0x03
+0001DA EC?? F???      00579 UTRCRT  call    CYCLE_ADVANCE_PRESCALE  
+0001DE EC?? F???      00580         call    CYCLE_RUN_CHANNEL
+0001E2 EF?? F???      00581         goto    UTRCRT
+                      00582 
+0001E6                00583 UT_TEST_CLOCK
+0001E6 EC?? F???      00584         call    CLK_INIT
+0001EA 0E11           00585 UT_CLKX movlw   .17
+                      00586 ;       call    CLK_DECREMENT
+                      00587 ;       call    CLK_INCREMENT
+0001EC D???           00588         bra     UT_CLKX
+                      00589 
+0001EE                00590 UT_CYCLE_PROCESSING
+0001EE EC?? F???      00591         call    CYCLE_PROCESSING        
+0001F2 0012           00592         return
+                      00593     endif               ; end unit tests
+                      00594 
+                      00595     if FALSE
+                      00596 ; Switch diagnostics
+                      00597 _SWITCH_READOUT ; load ckt 23 (TEN) with switch state. CLOSED = LIT
+                      00598         bsf     PORTA,5
+                      00599         btfss   PORTA,0
+                      00600         bcf     PORTA,5
+                      00601         
+                      00602 ;       movlw   0xFF    
+                      00603 ;       btfss   sw_read_state,SW_STATE_ON
+                      00604 ;       movlw   0x00
+                      00605 ;       movwf   ckt_level
+                      00606 ;       movlw   .23
+                      00607 ;       movwf   ckt_num
+                      00608 ;       call    CKT_WRITE_CIRCUIT
+                      00609         return  
+                      00610 
+                      00611 _SWITCH_TEN_ON
+                      00612         bcf     PORTA,5
+                      00613 ;       movlw   0xFF    
+                      00614 ;       movwf   ckt_level
+                      00615 ;       movlw   .23
+                      00616 ;       movwf   ckt_num
+                      00617 ;       call    CKT_WRITE_CIRCUIT
+                      00618         return
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 25
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00619 
+                      00620 _SWITCH_TEN_OFF
+                      00621         bsf     PORTA,5
+                      00622 ;       movlw   0x00    
+                      00623 ;       movwf   ckt_level
+                      00624 ;       movlw   .23
+                      00625 ;       movwf   ckt_num
+                      00626 ;       call    CKT_WRITE_CIRCUIT
+                      00627         return
+                      00628     endif               ; end switch diagnostics
+                      00629 
+                      00630         END                             ; directive 'end of program'
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 26
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+A                                 00000000
+ABDEN                             00000000
+ABDOVF                            00000007
+ACCESS                            00000000
+ACKDT                             00000005
+ACKEN                             00000004
+ACKSTAT                           00000006
+ACQT0                             00000003
+ACQT1                             00000004
+ACQT2                             00000005
+ADCON0                            00000FC2
+ADCON1                            00000FC1
+ADCON2                            00000FC0
+ADCS0                             00000000
+ADCS1                             00000001
+ADCS2                             00000002
+ADDEN                             00000003
+ADEN                              00000003
+ADFM                              00000007
+ADIE                              00000006
+ADIF                              00000006
+ADIP                              00000006
+ADON                              00000000
+ADRES                             00000FC3
+ADRESH                            00000FC4
+ADRESL                            00000FC3
+AN10                              00000001
+AN11                              00000004
+AN12                              00000000
+AN4                               00000005
+AN8                               00000002
+AN9                               00000003
+APP_INCLUDE_FILE                  wClock.inc
+ARG_HI_FLAG                       00000000
+ARG_NUM_MAX                       00000000
+B                                 00000001
+BANKED                            00000001
+BASE_OF_TABLES                    00002000
+BAUDCON                           00000FB8
+BAUDCTL                           00000FB8
+BCLIE                             00000003
+BCLIF                             00000003
+BCLIP                             00000003
+BF                                00000000
+BGST                              00000005
+BLU                               000000AB
+BLU_OFFSET                        00000002
+BOR                               00000000
+BRG16                             00000003
+BRGH                              00000002
+BRT                               00000002
+BRT_OFFSET                        00000002
+BSR                               00000FE0
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 27
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+C                                 00000000
+C1INV                             00000004
+C1OUT                             00000006
+C2INV                             00000005
+C2OUT                             00000007
+CAP16                             000000A8
+CAP2                              000000C0
+CAP4                              000000B8
+CAP64                             000000A0
+CAP8                              000000B0
+CCP1                              00000002
+CCP1CON                           00000FBD
+CCP1IE                            00000002
+CCP1IF                            00000002
+CCP1IP                            00000002
+CCP1M0                            00000000
+CCP1M1                            00000001
+CCP1M2                            00000002
+CCP1M3                            00000003
+CCP1X                             00000005
+CCP1Y                             00000004
+CCP2CON                           00000FBA
+CCP2IE                            00000000
+CCP2IF                            00000000
+CCP2IP                            00000000
+CCP2M0                            00000000
+CCP2M1                            00000001
+CCP2M2                            00000002
+CCP2M3                            00000003
+CCP2X                             00000005
+CCP2Y                             00000004
+CCP2_PORTB                        00000003
+CCP2_PORTC                        00000001
+CCPR1                             00000FBE
+CCPR1H                            00000FBF
+CCPR1L                            00000FBE
+CCPR2                             00000FBB
+CCPR2H                            00000FBC
+CCPR2L                            00000FBB
+CFGS                              00000006
+CHN_NUM_MAX                       00000015
+CHS0                              00000002
+CHS1                              00000003
+CHS2                              00000004
+CHS3                              00000005
+CIS                               00000003
+CK                                00000006
+CKE                               00000006
+CKP                               00000004
+CKT_INIT                          00000000
+CKT_ISR                           00000000
+CKT_NUM_MAX                       0000001D
+CKT_TABLE_INCREMENT               00000005
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 28
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+CKT_TABLE_LEN                     00000027
+CKT_WRITE_CHANNEL                 00000000
+CKT_WRITE_CIRCUIT                 00000000
+CLK_DECREMENT                     0000012A
+CLK_DH                            0000013E
+CLK_DX                            00000142
+CLK_INCREMENT                     00000112
+CLK_INIT                          000000C6
+CLK_ISR                           000000D8
+CLK_IX                            00000128
+CLK_PROCESSING                    000000F2
+CLK_TIMER                         00000BDC
+CLP_NOREADOUT                     00000110
+CM0                               00000000
+CM1                               00000001
+CM2                               00000002
+CMCON                             00000FB4
+CMIE                              00000006
+CMIF                              00000006
+CMIP                              00000006
+CREN                              00000004
+CS                                00000002
+CSRC                              00000007
+CUE_ARG                           00000002
+CUE_CLK_READOUT                   00000000
+CUE_CMD                           00000001
+CUE_DONE                          00000000
+CUE_JUMP                          00000005
+CUE_LOOP                          00000003
+CUE_LOOP_BLOCK                    00000004
+CUE_MAX                           00000005
+CUE_TABLES_START                  00002600
+CUE_WATCHER                       00000000
+CVR0                              00000000
+CVR1                              00000001
+CVR2                              00000002
+CVR3                              00000003
+CVRCON                            00000FB5
+CVREN                             00000007
+CVROE                             00000006
+CVRR                              00000005
+CVRSS                             00000004
+CYCLE_ADVANCE_PRESCALE            00000094
+CYCLE_PROCESSING                  00000064
+CYCLE_RUN_CHANNEL                 00000082
+CYCLE_START_FLAG                  00000001
+CYC_01                            0000006E
+CYC_02                            0000006E
+CYC_03                            00000070
+CYC_x                             0000007E
+CYN                               0000007F
+D                                 00000005
+DC                                00000001
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 29
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+DC1B0                             00000004
+DC1B1                             00000005
+DC2B0                             00000004
+DC2B1                             00000005
+DDRA                              TRISA
+DDRB                              TRISB
+DDRC                              TRISC
+DDRD                              TRISD
+DDRE                              TRISE
+DEVTYPE                           00004420
+DEV_FAMILY                        00000018
+DEV_INCLUDE_FILE                  d18f4520.inc
+DIAGNOSTICS_ENABLED               00000001
+DIRTY_BIT                         00000000
+DONE                              00000001
+D_A                               00000005
+ECCP1AS                           00000FB6
+ECCPAS                            00000FB6
+ECCPAS0                           00000004
+ECCPAS1                           00000005
+ECCPAS2                           00000006
+ECCPASE                           00000007
+EEADR                             00000FA9
+EECON1                            00000FA6
+EECON2                            00000FA7
+EEDATA                            00000FA8
+EEIE                              00000004
+EEIF                              00000004
+EEIP                              00000004
+EEPGD                             00000007
+EIGHT                             00000010
+ELEVEN                            00000013
+ERR_BAD_ARGNUM                    00000003
+ERR_BAD_CHANNEL                   00000002
+ERR_BAD_COMMAND                   00000001
+ERR_BAD_OPCODE                    00000004
+ERR_CMD_LOADER_FAILED             00000005
+ERR_GET_COMMAND_FAILED            00000006
+ERR_GET_NEXT_CMD_FAILED           00000007
+ERR_NO_ERROR                      00000000
+EXT_OFFSET                        00000003
+FADE                              00000056
+FADE_MAX                          00000059
+FADE_MIN                          00000058
+FADE_REPEAT                       00000057
+FADE_X                            0000005A
+FALSE                             00000000
+FAST                              00000001
+FDR_DISPATCH                      00000000
+FDR_TABLE_LEN                     0000000D
+FERR                              00000002
+FIVE                              0000000D
+FIVE_                             00000005
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 30
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+FLTS                              00000002
+FOSC                              00000024
+FOUR                              0000000C
+FREE                              00000004
+FSR0                              00000000
+FSR0H                             00000FEA
+FSR0L                             00000FE9
+FSR1                              00000001
+FSR1H                             00000FE2
+FSR1L                             00000FE1
+FSR2                              00000002
+FSR2H                             00000FDA
+FSR2L                             00000FD9
+GCEN                              00000007
+GIE                               00000007
+GIEH                              00000007
+GIEL                              00000006
+GO                                00000001
+GO_DONE                           00000001
+GRN                               00000055
+GRN_OFFSET                        00000001
+HALF                              00000001
+HLVDCON                           00000FD2
+HLVDEN                            00000004
+HLVDIE                            00000002
+HLVDIF                            00000002
+HLVDIP                            00000002
+HLVDL0                            00000000
+HLVDL1                            00000001
+HLVDL2                            00000002
+HLVDL3                            00000003
+HSB_TABLES_LEN                    00000600
+HSB_TABLES_START                  00002000
+HUE                               00000000
+HUE_OFFSET                        00000000
+IBF                               00000007
+IBOV                              00000005
+ICD_ENABLED                       00000000
+IDLEN                             00000007
+INDF0                             00000FEF
+INDF1                             00000FE7
+INDF2                             00000FDF
+INIT_PORTS_EXTERNAL               00000001
+INIT_T0_EXTERNAL                  00000001
+INIT_T1_EXTERNAL                  00000001
+INIT_WATCHDOG_TIMER               00000001
+INT0                              00000000
+INT0E                             00000004
+INT0F                             00000001
+INT0IE                            00000004
+INT0IF                            00000001
+INT1                              00000001
+INT1E                             00000003
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 31
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+INT1F                             00000000
+INT1IE                            00000003
+INT1IF                            00000000
+INT1IP                            00000006
+INT1P                             00000006
+INT2                              00000002
+INT2E                             00000004
+INT2F                             00000001
+INT2IE                            00000004
+INT2IF                            00000001
+INT2IP                            00000007
+INT2P                             00000007
+INTCON                            00000FF2
+INTCON2                           00000FF1
+INTCON3                           00000FF0
+INTEDG0                           00000006
+INTEDG1                           00000005
+INTEDG2                           00000004
+INTSRC                            00000007
+IOFS                              00000002
+IPEN                              00000007
+IPR1                              00000F9F
+IPR2                              00000FA2
+IRCF0                             00000004
+IRCF1                             00000005
+IRCF2                             00000006
+IRVST                             00000005
+ITS                               00000000
+IVRST                             00000005
+KBI0                              00000004
+KBI1                              00000005
+KBI2                              00000006
+KBI3                              00000007
+LATA                              00000F89
+LATA0                             00000000
+LATA1                             00000001
+LATA2                             00000002
+LATA3                             00000003
+LATA4                             00000004
+LATA5                             00000005
+LATA6                             00000006
+LATA7                             00000007
+LATB                              00000F8A
+LATB0                             00000000
+LATB1                             00000001
+LATB2                             00000002
+LATB3                             00000003
+LATB4                             00000004
+LATB5                             00000005
+LATB6                             00000006
+LATB7                             00000007
+LATC                              00000F8B
+LATC0                             00000000
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 32
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+LATC1                             00000001
+LATC2                             00000002
+LATC3                             00000003
+LATC4                             00000004
+LATC5                             00000005
+LATC6                             00000006
+LATC7                             00000007
+LATD                              00000F8C
+LATD0                             00000000
+LATD1                             00000001
+LATD2                             00000002
+LATD3                             00000003
+LATD4                             00000004
+LATD5                             00000005
+LATD6                             00000006
+LATD7                             00000007
+LATE                              00000F8D
+LATE0                             00000000
+LATE1                             00000001
+LATE2                             00000002
+LED_INCLUDE_FILE                  led.inc
+LVDCON                            00000FD2
+LVDEN                             00000004
+LVDIE                             00000002
+LVDIF                             00000002
+LVDIN                             00000005
+LVDIP                             00000002
+LVDL0                             00000000
+LVDL1                             00000001
+LVDL2                             00000002
+LVDL3                             00000003
+LVV0                              00000000
+LVV1                              00000001
+LVV2                              00000002
+LVV3                              00000003
+MAG                               000000D5
+MAIN_LOOP                         0000004E
+MASTER_INIT                       00000000
+MAXRAM                            000002FF
+MINUTES                           00000006
+MONOCHROME_MODE                   00000001
+N                                 00000004
+NEVER                             000000FE
+NINE                              00000011
+NOT_A                             00000005
+NOT_ADDRESS                       00000005
+NOT_BOR                           00000000
+NOT_CS                            00000002
+NOT_DONE                          00000001
+NOT_PD                            00000002
+NOT_POR                           00000001
+NOT_RBPU                          00000007
+NOT_RD                            00000000
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 33
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+NOT_RI                            00000004
+NOT_SS                            00000005
+NOT_T1SYNC                        00000002
+NOT_T3SYNC                        00000002
+NOT_TO                            00000003
+NOT_W                             00000002
+NOT_WR                            00000001
+NOT_WRITE                         00000002
+NOW                               000000FF
+OBF                               00000006
+OCLOCK                            00000015
+OERR                              00000001
+OFF                               00000000
+ON                                00000001
+ONE                               00000009
+OP_ADD                            0000000B
+OP_ADD_AND                        0000000C
+OP_ADD_AND_SAVE                   0000000D
+OP_ADD_IND                        0000000E
+OP_ADD_IND_AND                    00000010
+OP_ADD_IND_AND_SAVE               00000011
+OP_ADD_IND_SAVE                   0000000F
+OP_DEC                            00000006
+OP_DECX2_RANGE                    00000008
+OP_DECX3_RANGE                    00000009
+OP_DECX4_RANGE                    0000000A
+OP_DEC_RANGE                      00000007
+OP_INC                            00000001
+OP_INCX2_RANGE                    00000003
+OP_INCX3_RANGE                    00000004
+OP_INCX4_RANGE                    00000005
+OP_INC_RANGE                      00000002
+OP_LIT                            00000000
+OP_OPCODE_MAX                     0000001A
+OP_RAND                           00000019
+OP_RAND_RANGE                     0000001A
+OP_SUB                            00000012
+OP_SUB_AND                        00000013
+OP_SUB_AND_SAVE                   00000014
+OP_SUB_IND                        00000015
+OP_SUB_IND_AND                    00000017
+OP_SUB_IND_AND_SAVE               00000018
+OP_SUB_IND_SAVE                   00000016
+ORN                               00000015
+OSCCON                            00000FD3
+OSCFIE                            00000007
+OSCFIF                            00000007
+OSCFIP                            00000007
+OSCTUNE                           00000F9B
+OSTS                              00000003
+OUTER                             0000004E
+OV                                00000003
+P                                 00000004
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 34
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+P1B                               00000005
+P1C                               00000006
+P1D                               00000007
+P1M0                              00000006
+P1M1                              00000007
+PAST                              00000007
+PATCH                             00000041
+PC                                00000FF9
+PCFG0                             00000000
+PCFG1                             00000001
+PCFG2                             00000002
+PCFG3                             00000003
+PCL                               00000FF9
+PCLATH                            00000FFA
+PCLATU                            00000FFB
+PD                                00000002
+PDC0                              00000000
+PDC1                              00000001
+PDC2                              00000002
+PDC3                              00000003
+PDC4                              00000004
+PDC5                              00000005
+PDC6                              00000006
+PEIE                              00000006
+PEN                               00000002
+PGC                               00000006
+PGD                               00000007
+PGM                               00000005
+PIE1                              00000F9D
+PIE2                              00000FA0
+PIR1                              00000F9E
+PIR2                              00000FA1
+PLAYLIST_CODA                     00000001
+PLAYLIST_DONE                     00000000
+PLAY_INIT                         00000000
+PLLEN                             00000006
+PLUSW0                            00000FEB
+PLUSW1                            00000FE3
+PLUSW2                            00000FDB
+POR                               00000001
+PORTA                             00000F80
+PORTB                             00000F81
+PORTC                             00000F82
+PORTD                             00000F83
+PORTE                             00000F84
+POSTDEC0                          00000FED
+POSTDEC1                          00000FE5
+POSTDEC2                          00000FDD
+POSTINC0                          00000FEE
+POSTINC1                          00000FE6
+POSTINC2                          00000FDE
+PR2                               00000FCB
+PREINC0                           00000FEC
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 35
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+PREINC1                           00000FE4
+PREINC2                           00000FDC
+PROD                              00000FF3
+PRODH                             00000FF4
+PRODL                             00000FF3
+PRSEN                             00000007
+PSA                               00000003
+PSP0                              00000000
+PSP1                              00000001
+PSP2                              00000002
+PSP3                              00000003
+PSP4                              00000004
+PSP5                              00000005
+PSP6                              00000006
+PSP7                              00000007
+PSPIE                             00000007
+PSPIF                             00000007
+PSPIP                             00000007
+PSPMODE                           00000004
+PSSAC0                            00000002
+PSSAC1                            00000003
+PSSBD0                            00000000
+PSSBD1                            00000001
+PS_OFF                            000001A0
+PS_ON                             000001B4
+PWM1CON                           00000FB7
+QUARTER                           00000003
+R                                 00000002
+RA0                               00000000
+RA1                               00000001
+RA2                               00000002
+RA3                               00000003
+RA4                               00000004
+RA5                               00000005
+RA6                               00000006
+RA7                               00000007
+RB0                               00000000
+RB1                               00000001
+RB2                               00000002
+RB3                               00000003
+RB4                               00000004
+RB5                               00000005
+RB6                               00000006
+RB7                               00000007
+RBIE                              00000003
+RBIF                              00000000
+RBIP                              00000000
+RBPU                              00000007
+RC0                               00000000
+RC1                               00000001
+RC2                               00000002
+RC3                               00000003
+RC4                               00000004
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 36
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+RC5                               00000005
+RC6                               00000006
+RC7                               00000007
+RCEN                              00000003
+RCIDL                             00000006
+RCIE                              00000005
+RCIF                              00000005
+RCIP                              00000005
+RCMT                              00000006
+RCON                              00000FD0
+RCREG                             00000FAE
+RCSTA                             00000FAB
+RD                                00000000
+RD0                               00000000
+RD1                               00000001
+RD16                              00000007
+RD2                               00000002
+RD3                               00000003
+RD4                               00000004
+RD5                               00000005
+RD6                               00000006
+RD7                               00000007
+RE0                               00000000
+RE1                               00000001
+RE2                               00000002
+RE3                               00000003
+RED                               00000000
+RED_OFFSET                        00000000
+RI                                00000004
+RSEN                              00000001
+RX                                00000007
+RX9                               00000006
+RX9D                              00000000
+RXDTP                             00000005
+RX_ENABLED                        00000000
+R_W                               00000002
+S                                 00000003
+SAT                               00000001
+SAT_OFFSET                        00000001
+SBOREN                            00000006
+SCK                               00000003
+SCKP                              00000004
+SCL                               00000003
+SCS0                              00000000
+SCS1                              00000001
+SDA                               00000004
+SDI                               00000004
+SDO                               00000005
+SECOND_FLAG                       00000003
+SEN                               00000000
+SENDB                             00000003
+SET_BRT                           00000011
+SET_HSB                           00000023
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 37
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+SET_RGB                           00000033
+SEVEN                             0000000F
+SIX                               0000000E
+SMP                               00000007
+SP0                               00000000
+SP1                               00000001
+SP2                               00000002
+SP3                               00000003
+SP4                               00000004
+SPBRG                             00000FAF
+SPBRGH                            00000FB0
+SPEN                              00000007
+SREN                              00000005
+SS                                00000005
+SSPADD                            00000FC8
+SSPBUF                            00000FC9
+SSPCON1                           00000FC6
+SSPCON2                           00000FC5
+SSPEN                             00000005
+SSPIE                             00000003
+SSPIF                             00000003
+SSPIP                             00000003
+SSPM0                             00000000
+SSPM1                             00000001
+SSPM2                             00000002
+SSPM3                             00000003
+SSPOV                             00000006
+SSPSTAT                           00000FC7
+START                             0000002A
+STATUS                            00000FD8
+STKFUL                            00000007
+STKOVF                            00000007
+STKPTR                            00000FFC
+STKUNF                            00000006
+SWDTE                             00000000
+SWDTEN                            00000000
+SWITCH_INIT                       00000162
+SWITCH_PROCESSING                 0000016A
+SWITCH_READ                       00000196
+SWITCH_READ_FLAG                  00000002
+SW_DEBOUNCE_MAX                   00000008
+SW_HELD_COUNT                     0000003C
+SW_ON                             00000178
+SW_RISING                         0000017E
+SW_STATE_FALLING_bp               00000002
+SW_STATE_ON_bp                    00000000
+SW_STATE_RISING_bp                00000001
+SYNC                              00000004
+T016BIT                           00000006
+T08BIT                            00000006
+T0CKI                             00000004
+T0CON                             00000FD5
+T0CON_INIT                        00000006
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 38
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+T0CON_START                       00000086
+T0CS                              00000005
+T0IE                              00000005
+T0IF                              00000002
+T0PS0                             00000000
+T0PS1                             00000001
+T0PS2                             00000002
+T0PS3                             00000003
+T0SE                              00000004
+T0_INIT                           00000144
+T0_START                          0000014E
+T0_STOP                           00000144
+T13CKI                            00000000
+T1CKPS0                           00000004
+T1CKPS1                           00000005
+T1CON                             00000FCD
+T1OSCEN                           00000003
+T1OSI                             00000001
+T1OSO                             00000000
+T1RUN                             00000006
+T1SYNC                            00000002
+T1_START                          00000000
+T2CKPS0                           00000000
+T2CKPS1                           00000001
+T2CON                             00000FCA
+T2OUTPS0                          00000003
+T2OUTPS1                          00000004
+T2OUTPS2                          00000005
+T2OUTPS3                          00000006
+T3CCP1                            00000003
+T3CCP2                            00000006
+T3CKPS0                           00000004
+T3CKPS1                           00000005
+T3CON                             00000FB1
+T3SYNC                            00000002
+TABLAT                            00000FF5
+TBLPTR                            00000FF6
+TBLPTRH                           00000FF7
+TBLPTRL                           00000FF6
+TBLPTRU                           00000FF8
+TEN                               00000012
+TEN_                              00000002
+THREE                             0000000B
+TMR0H                             00000FD7
+TMR0H_INIT                        0000000B
+TMR0IE                            00000005
+TMR0IF                            00000002
+TMR0IP                            00000002
+TMR0L                             00000FD6
+TMR0L_INIT                        000000DC
+TMR0ON                            00000007
+TMR1CS                            00000001
+TMR1H                             00000FCF
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 39
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+TMR1IE                            00000000
+TMR1IF                            00000000
+TMR1IP                            00000000
+TMR1L                             00000FCE
+TMR1ON                            00000000
+TMR2                              00000FCC
+TMR2IE                            00000001
+TMR2IF                            00000001
+TMR2IP                            00000001
+TMR2ON                            00000002
+TMR3CS                            00000001
+TMR3H                             00000FB3
+TMR3IE                            00000001
+TMR3IF                            00000001
+TMR3IP                            00000001
+TMR3L                             00000FB2
+TMR3ON                            00000000
+TO                                00000003
+TOS                               00000FFD
+TOSH                              00000FFE
+TOSL                              00000FFD
+TOSU                              00000FFF
+TOUTPS0                           00000003
+TOUTPS1                           00000004
+TOUTPS2                           00000005
+TOUTPS3                           00000006
+TO_                               00000008
+TRISA                             00000F92
+TRISA0                            00000000
+TRISA1                            00000001
+TRISA2                            00000002
+TRISA3                            00000003
+TRISA4                            00000004
+TRISA5                            00000005
+TRISA6                            00000006
+TRISA7                            00000007
+TRISB                             00000F93
+TRISB0                            00000000
+TRISB1                            00000001
+TRISB2                            00000002
+TRISB3                            00000003
+TRISB4                            00000004
+TRISB5                            00000005
+TRISB6                            00000006
+TRISB7                            00000007
+TRISC                             00000F94
+TRISC0                            00000000
+TRISC1                            00000001
+TRISC2                            00000002
+TRISC3                            00000003
+TRISC4                            00000004
+TRISC5                            00000005
+TRISC6                            00000006
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 40
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+TRISC7                            00000007
+TRISD                             00000F95
+TRISD0                            00000000
+TRISD1                            00000001
+TRISD2                            00000002
+TRISD3                            00000003
+TRISD4                            00000004
+TRISD5                            00000005
+TRISD6                            00000006
+TRISD7                            00000007
+TRISE                             00000F96
+TRISE0                            00000000
+TRISE1                            00000001
+TRISE2                            00000002
+TRMT                              00000001
+TRUE                              00000001
+TUN0                              00000000
+TUN1                              00000001
+TUN2                              00000002
+TUN3                              00000003
+TUN4                              00000004
+TWELVE                            00000014
+TWENTY                            00000004
+TWO                               0000000A
+TX                                00000006
+TX9                               00000006
+TX9D                              00000000
+TXCKP                             00000004
+TXEN                              00000005
+TXIE                              00000004
+TXIF                              00000004
+TXIP                              00000004
+TXREG                             00000FAD
+TXSTA                             00000FAC
+UA                                00000001
+UNITS_ENABLED                     00000001
+UNIT_TESTS                        0000004C
+UTCAP                             000001D0
+UTRCRT                            000001DA
+UT_CKT                            00000000
+UT_CLKX                           000001EA
+UT_CMD                            00000000
+UT_CYCLE_ADVANCE_PRESCALE         000001CC
+UT_CYCLE_PROCESSING               000001EE
+UT_CYCLE_RUN_CHANNEL              000001D8
+UT_MAIN                           000001C6
+UT_PLAY                           00000000
+UT_TEST_CLOCK                     000001E6
+VCFG0                             00000004
+VCFG1                             00000005
+VDIRMAG                           00000007
+VIO                               000000D5
+W                                 00000000
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 41
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+WATCH                             00000060
+WCOL                              00000007
+WDTCON                            00000FD1
+WDT_START                         00000000
+WR                                00000001
+WREG                              00000FE8
+WREN                              00000002
+WRERR                             00000003
+WUE                               00000001
+YEL                               0000002A
+Z                                 00000002
+_BOREN_NOSLP_2L                   000000FD
+_BOREN_OFF_2L                     000000F9
+_BOREN_ON_2L                      000000FB
+_BOREN_SBORDIS_2L                 000000FF
+_BORV_0_2L                        000000E7
+_BORV_1_2L                        000000EF
+_BORV_2_2L                        000000F7
+_BORV_3_2L                        000000FF
+_CCP2MX_PORTBE_3H                 000000FE
+_CCP2MX_PORTC_3H                  000000FF
+_CONFIG1H                         00300001
+_CONFIG2H                         00300003
+_CONFIG2L                         00300002
+_CONFIG3H                         00300005
+_CONFIG4L                         00300006
+_CONFIG5H                         00300009
+_CONFIG5L                         00300008
+_CONFIG6H                         0030000B
+_CONFIG6L                         0030000A
+_CONFIG7H                         0030000D
+_CONFIG7L                         0030000C
+_CP0_OFF_5L                       000000FF
+_CP0_ON_5L                        000000FE
+_CP1_OFF_5L                       000000FF
+_CP1_ON_5L                        000000FD
+_CPB_OFF_5H                       000000FF
+_CPB_ON_5H                        000000BF
+_CPD_OFF_5H                       000000FF
+_CPD_ON_5H                        0000007F
+_DEBUG_OFF_4L                     000000FF
+_DEBUG_ON_4L                      0000007F
+_DEVID1                           003FFFFE
+_DEVID2                           003FFFFF
+_EBTR0_OFF_7L                     000000FF
+_EBTR0_ON_7L                      000000FE
+_EBTR1_OFF_7L                     000000FF
+_EBTR1_ON_7L                      000000FD
+_EBTRB_OFF_7H                     000000FF
+_EBTRB_ON_7H                      000000BF
+_FCMEN_OFF_1H                     000000BF
+_FCMEN_ON_1H                      000000FF
+_IDLOC0                           00200000
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 42
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+_IDLOC1                           00200001
+_IDLOC2                           00200002
+_IDLOC3                           00200003
+_IDLOC4                           00200004
+_IDLOC5                           00200005
+_IDLOC6                           00200006
+_IDLOC7                           00200007
+_IESO_OFF_1H                      0000007F
+_IESO_ON_1H                       000000FF
+_LPT1OSC_OFF_3H                   000000FB
+_LPT1OSC_ON_3H                    000000FF
+_LVP_OFF_4L                       000000FB
+_LVP_ON_4L                        000000FF
+_MCLRE_OFF_3H                     0000007F
+_MCLRE_ON_3H                      000000FF
+_OSC_ECIO6_1H                     000000F5
+_OSC_EC_1H                        000000F4
+_OSC_HSPLL_1H                     000000F6
+_OSC_HS_1H                        000000F2
+_OSC_INTIO67_1H                   000000F8
+_OSC_INTIO7_1H                    000000F9
+_OSC_LP_1H                        000000F0
+_OSC_RCIO6_1H                     000000F7
+_OSC_RC_1H                        000000F3
+_OSC_XT_1H                        000000F1
+_PBADEN_OFF_3H                    000000FD
+_PBADEN_ON_3H                     000000FF
+_PWRT_OFF_2L                      000000FF
+_PWRT_ON_2L                       000000FE
+_STVREN_OFF_4L                    000000FE
+_STVREN_ON_4L                     000000FF
+_WDTPS_1024_2H                    000000F5
+_WDTPS_128_2H                     000000EF
+_WDTPS_16384_2H                   000000FD
+_WDTPS_16_2H                      000000E9
+_WDTPS_1_2H                       000000E1
+_WDTPS_2048_2H                    000000F7
+_WDTPS_256_2H                     000000F1
+_WDTPS_2_2H                       000000E3
+_WDTPS_32768_2H                   000000FF
+_WDTPS_32_2H                      000000EB
+_WDTPS_4096_2H                    000000F9
+_WDTPS_4_2H                       000000E5
+_WDTPS_512_2H                     000000F3
+_WDTPS_64_2H                      000000ED
+_WDTPS_8192_2H                    000000FB
+_WDTPS_8_2H                       000000E7
+_WDT_OFF_2H                       000000FE
+_WDT_ON_2H                        000000FF
+_WRT0_OFF_6L                      000000FF
+_WRT0_ON_6L                       000000FE
+_WRT1_OFF_6L                      000000FF
+_WRT1_ON_6L                       000000FD
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 43
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+_WRTB_OFF_6H                      000000FF
+_WRTB_ON_6H                       000000BF
+_WRTC_OFF_6H                      000000FF
+_WRTC_ON_6H                       000000DF
+_WRTD_OFF_6H                      000000FF
+_WRTD_ON_6H                       0000007F
+_XINST_OFF_4L                     000000BF
+_XINST_ON_4L                      000000FF
+__18F4420                         00000001
+app_flags                         00000000
+c00                               00000000
+c01                               00000004
+c02                               00000008
+c03                               0000000C
+c04                               00000010
+c05                               00000014
+c06                               00000018
+c07                               0000001C
+c08                               00000020
+c09                               00000024
+c10                               00000028
+c11                               0000002C
+c12                               00000030
+c13                               00000034
+c14                               00000038
+c15                               0000003C
+c16                               00000040
+c17                               00000044
+c18                               00000048
+c19                               0000004C
+c20                               00000050
+c21                               00000054
+c22                               00000058
+c23                               0000005C
+c24                               00000060
+c25                               00000064
+c26                               00000068
+c27                               0000006C
+c28                               00000070
+c29                               00000074
+c30                               00000078
+c31                               0000007C
+c32                               00000080
+c33                               00000084
+c34                               00000088
+c35                               0000008C
+c36                               00000090
+c37                               00000094
+c38                               00000098
+c39                               0000009C
+c40                               000000A0
+c41                               000000A4
+c42                               000000A8
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 44
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+c43                               000000AC
+c44                               000000B0
+c45                               000000B4
+c46                               000000B8
+c47                               000000BC
+c48                               000000C0
+c49                               000000C4
+c50                               000000C8
+c51                               000000CC
+c52                               000000D0
+c53                               000000D4
+c54                               000000D8
+c55                               000000DC
+c56                               000000E0
+c57                               000000E4
+c58                               000000E8
+c59                               000000EC
+c60                               000000F0
+c61                               000000F4
+c62                               000000F8
+c63                               000000FC
+chn_level                         00000000
+chn_num                           00000000
+ckt_level                         00000000
+ckt_num                           00000000
+clk_hour                          00000004
+clk_min                           00000005
+clk_sec                           00000006
+clk_subsec                        00000007
+cue_clk_hour                      00000000
+cue_clk_min                       00000000
+cycle_counter                     00000001
+cycle_counter_hi                  00000002
+cycle_prescale                    00000003
+fdr_level                         00000000
+isrclk_W                          0000000E
+isrclk_status                     0000000F
+setptr                            
+sw_debounce                       00000009
+sw_held_counter                   0000000B
+sw_proc_state                     0000000A
+sw_state                          00000008
+switch                            
+switch01b                         00000000
+switch01p                         00000F80
+tbladdr                           
+tblindx                           
+tblread                           
+temp_tblptrh                      0000000C
+temp_tblptrl                      0000000D
+
+MPASM  5.34                        WCLOCK.ASM   5-22-2010  11:42:33         PAGE 45
+
+
+
+
+
+Errors   :     0
+Warnings :     0 reported,     0 suppressed
+Messages :     0 reported,     0 suppressed
+
+

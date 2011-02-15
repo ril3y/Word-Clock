@@ -1,0 +1,267 @@
+;*****************************************************************************
+;
+;    Filename:	    	led_doc.txt
+;    Function:			general documenation 
+;    Author, Company:	Alden Hart, Luke's Lights
+;    Date/Time/Rev:		090619
+
+; This file contains a lot of stuff related to the LED framework.
+; OK, so it's not really a framework. Would you believe 2 2x4's and a crossbrace?
+
+;*****************************************************************************
+; TERMINOLOGY
+; The system is modeled after a theater stage lighting memory board. 
+;
+; MEMORY BOARD  Refers to the entire system
+;
+; CIRCUIT	A single control path, e.g. H,S,B, R,G,B, or monochrome path
+;
+; CHANNEL	The full set of circuits needed for a single fixture, 
+;			e.g. HSB or RGB for a color fixture 
+;
+; FADE		A timed fade between 2 levels (H,S,B, R,G,B, or monochrome)
+;
+; FADER		A software contract that performs fades (was "command")
+;
+; DIMMER	An output circuit that can execute fades (dimming)
+;
+; LEVEL		The output level of a circuit
+;
+; FIXTURE	or INSTRUMENT: A physical lighting unit - like an RGB LED
+;
+; PATCH		Connect or "slave" a circuit to a fader 
+;
+; CUE		A pre-defined set of lighting levels or fades. An item on a playlist
+;
+; CUE NUMBER  (obvious)
+;
+; PLAYLIST	(aka cue list or cue sheet: A set of queues that execute in sequence
+;
+; PLAYBACK	Running a series of cues automatically and in sequence
+;
+; FOLLOW	or autofollow: Follow a cue quickly after another queue
+;
+; CALL		Call a cue - to advance to the next cue
+;
+;
+; DWELL		The ON time	at the top of a fade (also Up, Down, Off, Wait)
+;
+; COMMAND	A called cue or other command delivered via serial or read from memory
+;
+; MASTER	A brightness or other control that scales a group of faders
+;			Also: Grand Master, Sub Master
+;
+; BALLAST	LED current limiting circuits or software
+;
+; COLOR PROCESSING  Converting HSB to RGB or other color transformations
+;
+; COLOR CORRECTION	Establishing white balance
+;
+; Effects:
+; BUMP		A discontinuous jump in lighting level, a bump cue 	
+; CHASE		chase lights
+; SCROLL	color changing
+; DISSOLVE	cross fade an effect
+; BLACKOUT	go to black
+; STEP		a control to "step" through a chase effect in time to music etc
+; CROSS FADE
+;
+; Hardware Terms:		
+; BALLAST	LED current limiting circuits or software
+; GHOST CURRENT	a small current that causes a light to glow even when it's off
+
+
+;*****************************************************************************
+; INCLUDE FILE USAGE CONVENTIONS
+;
+; Include files are nested:
+;
+; app.inc		(e.g. eFruit.inc) Application & outer layer
+;   device.inc	(e.g. dev_2520.inc) Custom device wrapper
+;	  uChip.inc	(e.g. p18f2520.inc) uChip's device file
+;
+; This allows the app.inc to be included in all the .asm files, 
+; except the dev_XXXX.asm file that includes only the device.inc file 
+; (and it's wrapped uChip device file).
+
+;*****************************************************************************
+; SUBROUTINE CALLING, RETURN, AND REGISTER USE CONVENTIONS 
+;
+; A lot of the stuff in this section is things a compiler would do for you.
+;
+; XINIT: All code assumes XINIT is OFF (no extended instruction set & addressing)
+;
+; CODE ORGANIZATION: Code is thought of in 4 distinct regions:
+;	- high priority interrupt routines
+;	- low priority interrupt routines
+;	- main body routines
+;	- helper routines
+;
+; The 2 interrupt levels include the ISRs themselves and any subroutines that
+; are executed only by that ISR level. The main body code is any routine that
+; is executed as part of the normal main loop, or called by a main loop 
+; routine. The calling hierachy can be complex. Helper routines are tightly
+; bound to a parent routine and as therefore known to have no other callers.
+
+; BANK USAGE: Unless otherwise noted, all routines operate in bank 0. If a
+; routine works outside of bank zero it is responsible for resetting BSR 
+; (unless it's a helper routine).
+;
+; FSR USAGE: Most other memory outside of bank 0 is accessed as tables using 
+; FSRs. FSRs are used as:
+; 	- FSR0: LED readout functions (used by hi priority interrupts)
+;	- FSR1: general purpose FSR
+;	- FSR2: general purpose FSR
+;
+; CALLING CONVENTIONS: Most routines pass an input and output in W. If more than
+; one arg is required they are passed via GPRs. The stack is limited to 32 bytes
+; and is not used to pass args. All call and return register usage should be 
+; documented in the module header.
+;
+; STATUS RETURN: Routines can return a status by setting or clearing the Z bit. 
+; Conventions are:
+;
+;     OK    / TRUE  / 1 	Z bit is SET
+;     ERROR / FALSE / 0		Z bit is CLEARED
+;
+; The Z bit may also be used to signal the caller that subsequent processing 
+; is needed (Z=1, TRUE) or is not needed (Z=0, FALSE). An example of this is the 
+; command loader sequence, which may signal downstream routines to run or skip 
+; processing by using the Z bit.
+;
+; MEMORY USE and VARIABLE SCOPE: Data RAM (GPR space) is preserved by manually 
+; managing a heap. variables that need to either be persistent between invocations
+; or publically visible across routines are statically allocated and named (res).
+; Variables that are local in scope to the 
+;
+
+
+
+;*****************************************************************************
+; CHIP RESOURCE USAGE NOTES
+;
+; Everything assumes that XINST is OFF! No shifted addressing.
+;
+; High priority interrupt: 	BAM readout using Timer 1
+; Low priority interrupt:	I2C serial I/O using MSSP2
+;
+; Oscillator: using internal oscillator with PLL for 32 Mhz operation, cranked 
+; up with tuning to about 36 Mhz.
+
+
+
+;*****************************************************************************
+; UNIT TESTING CONVENTIONS
+; Unit tests are written for some but not all subroutines. The following 
+; conventions are observed:
+;
+; - A unit test function should exist for each module (.asm file) labeled 
+;	as UT_<MODULE_NAME>. The module should export this entry point as a global. 
+;	The entry point should be added to the main file as an external and be 
+;	added to the RUN_UNITS list for execution.	
+;
+; - The specific tests to be run are controlled within the module under the
+;	UT_<MODULE_NAME> entry point. Control can be as crude as commenting in 
+;	and out rcall's, or something more sophisticated.
+;
+; - Unit tests should be collected in a group at the end of the module with 
+;	the individual unit tests labeled UT_<NAME_OF_ROUTINE>. They are typically
+;	not exported.
+;
+; - If "UNITS_ENABLED" is ON then all unit tests will be included in the build.
+;	(See Assembly-Time Switches section of color64.inc). If this switch is OFF 
+;	the unit tests will not be included in the build, giving that space back 
+;	to the program. Code space considerations might require finer grained 
+;	control of this enabling in the future, but I'll deal with that if and 
+;	when it's needed.
+;
+
+
+; Theory of Operation
+;
+; This file provides the equates and data needed to run the patterns (sequences) 
+; that are selected using the tilt switches. The following constructs are used:
+;
+;   (1) Sequences     - Tables of one or more presets that execute in sequence. 
+;			Sequences may run once or may loop or repeat.
+;
+;   (2) Presets       - Standalone executable patterns. When a preset signals
+;			completion the next preset in the sequence is executed. 
+;
+;   (3) ARGS	      - A macro substition capability is provided for the arguments
+;			used by presets.
+;
+;   (4) Tweaks	      - A tweak is a routine that manipulates the channel tables
+;			directly to change a hue, brightness, etc.
+;
+; ----- Presets -----
+;
+; Presets are grouped sets of commands for one or more channels (taken from the 
+; theatrical lighting term to "preset" a board to specific settings). A preset 
+; simulates the serial port receiving those same command bytes, only they are 
+; read from program memory instead of from the serial port. All the data from 
+; a preset is loaded "at once" by the preset loader; i.e. all the commands for 
+; all the affected channels are loaded in the same operation.
+;
+; Preset Arguments: It is possible to pass arguments to a preset instead of just
+; statically setting the command values. The preset arguments are specified in
+; the sequence table and are substituted into the command at preset load time.
+; See the Sequence Tables section for arument usage and other details.
+;
+; Preset args supports the re-use of presets by parameters that are set in the 
+; sequence table command lines. For example, a single chase sequence preset
+; could be developed and used at a variety of speeds and brightness levels by
+; different sequence table entries.
+;
+; Preset WATCH (Preset Complete): A preset will continue to execute until 
+; "preset_complete" is detected. The preset_complete value is the 
+; first byte of a preset, and is the 
+; number of commands that are required to run to completion before the preset
+; itself is considered complete. Practically speaking, the preset_complete
+; value should be set to between 1 and 10 for most presets. Note that it is 
+; also possible to use the 11th channel to signal completion.
+;
+; Individual commands signal completion once they have run once or the repeat
+; count for that command has been exhausted. Commands that run forever 
+; (repeat = 0) will never signal completion.
+;
+; Once preset_complete is detected the next preset in the sequence table is 
+; loaded.
+;
+; ----- Sequence Tables -----
+;
+; The sequence tables contain the addresses of one or more presets that are to 
+; run in sequence. The sequence tables also support loops and stop conditions.
+;
+; The sequence tables use the 14 bit program memory words as so:
+;	0x00xx - 0x0Cxx		- Preset argument values (MSbyte = 00 - 0C)
+;	0x0Dxx - 0x0Fxx		- Unused - could be used for more ARGs
+;	0x1000 - 0x2FFF		- Presets (valid address range for presets)
+;	0x3D00 - 0x3DFF		- LOOP command, see below 
+;	0x3E00			- CODA: table coda - repeat from beginning
+;	0x3F00			- DONE: meaningful in either preset or seq table
+;
+; Sequence table flow control commands are:
+;
+;   LOOP commands are constructed as: 			LOOP | count, address
+;   	count can be any number from 1 - 255
+;   	address is the address in the sequence table to loop back to
+;
+;   CODA commands are constructed as: 			CODA
+;   	returns to start of sequence table (repeats forever)
+;
+;   DONE commands are constructed as: 			DONE
+;   	end sequence table
+;	also used to signal the end of a preset
+;
+; Arguments are specified in a sequence table and substitued in the called preset:
+;
+;   Arguments in a sequence table are specified: 	ARGN | value
+; 	value is a number from 0 - 255 
+;
+;   Arguments in a preset are specified:		ARGN
+; 	The value for ARGN from the seq table is substituted in the preset
+;
+; ---- Tweaks ----
+;
+;
